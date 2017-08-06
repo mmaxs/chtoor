@@ -78,17 +78,7 @@ case "$OPT_MODE" in
       if [ -f "$OPT_CONFIG_FILE" ]; then
         source "$OPT_CONFIG_FILE" || { echo >&2 "$0: config file: '$OPT_CONFIG_FILE' -- source failure"; exit 4; }
       else
-        echo >&2 "$0: config file: '$OPT_CONFIG_FILE' -- not found"
-        echo >&2 "$0: fall back to minimal defaults:"
-        echo >&2 "$0: EXPORT=(${EXPORT[*]})"
-        echo >&2 "$0: SETUP=("
-        (
-          declare entry=''
-          while IFS='' read -r entry; do
-            echo >&2 "$0:    [$entry]=${SETUP[$entry]}"
-          done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!SETUP[*]}")
-        )
-        echo >&2 "$0: )"
+        echo >&2 "$0: config file: '$OPT_CONFIG_FILE' -- not found; fall back to minimal defaults"
       fi
       ;;&
   (go)
