@@ -1,6 +1,22 @@
 #! /bin/bash
 # vi: tw=100
 
+
+is-same()
+{
+  local LHS="$(realpath -q -e "$1")" RHS="$(realpath -q -e "$2")"
+  [ -n "$LHS" -a -n "$RHS" ]  &&
+  {
+    test "$LHS" = "$RHS"  ||
+    {
+      LHS="$(stat --printf="%d:%i" "$LHS")"
+      RHS="$(stat --printf="%d:%i" "$RHS")"
+      test "$LHS" = "$RHS"
+    }
+  }
+}
+
+
 declare USER="$(whoami)"  # set it to the effective user ID name
 declare CHTOOR_MARKER=".chtoor"  # the file name to visually denote the new root environment establishment
 # For quick recognizing that new root environment setup has been performed (i.e. some bind mounts to
@@ -37,14 +53,14 @@ declare CHTOOR_DIR="$1"  # the directory where to create the 'new_root'
 [ -d "$CHTOOR_DIR" ] || { echo >&2 "$0: CHTOOR_DIR: '$CHTOOR_DIR' -- not exist / not a directory"; exit 2; }
 
 declare NEW_ROOT="$CHTOOR_DIR/new_root"
-declare NEW_ROOT_REALPATH="$(realpath -q -e "$NEW_ROOT")"
 if [ -e "$NEW_ROOT" ]; then
   [ -d "$NEW_ROOT" ] || { echo >&2 "$0: new_root: '$NEW_ROOT' -- not a directory"; exit 3; }
   mountpoint -q "$NEW_ROOT" && { echo >&2 "$0: new_root: '$NEW_ROOT' -- is a mountpoint"; exit 3; }
-  [ "$NEW_ROOT_REALPATH" = / ] && { echo >&2 "$0: new root: '$NEW_ROOT' -- is the current root"; exit 3; }
+  is-same "$NEW_ROOT" "/" && { echo >&2 "$0: new root: '$NEW_ROOT' -- is the current root"; exit 3; }
 else
   mkdir "$NEW_ROOT" || { echo >&2 "$0: new_root: '$NEW_ROOT' -- cannot create directory"; exit 3; }
 fi
+declare NEW_ROOT_REALPATH="$(realpath -q -e "$NEW_ROOT")"
 
 declare RUN="/bin/bash -l"  # the command to run with the changed root directory
 declare EXPORT=(TERM PATH DISPLAY)  # shell variables for export into new root environment
@@ -80,29 +96,6 @@ case "$OPT_MODE" in
       ;;
 esac
 
-
-is-same()
-{
-  local LHS="$(realpath -q -e "$1")" RHS="$(realpath -q -e "$2")"
-  [ -n "$LHS" -a -n "$RHS" ]  &&
-  {
-    test "$LHS" = "$RHS"  ||
-    {
-      mountpoint -q "$LHS"  &&
-      {
-        LHS="$(findmnt --raw --noheadings --output SOURCE --uniq "$LHS")"
-        LHS="$(sed -b -e 's/^[^[]\+\[\(.\+\)\]$/\1/' <<<"$LHS")"
-      }
-      mountpoint -q "$RHS"  &&
-      {
-        RHS="$(findmnt --raw --noheadings --output SOURCE --uniq "$RHS")"
-        RHS="$(sed -b -e 's/^[^[]\+\[\(.\+\)\]$/\1/' <<<"$RHS")"
-      }
-      test "$LHS" = "$RHS"
-    }
-  }
-}
-is-root()  { is-same "$1" /; }
 
 __chtoor-setup()
 {
