@@ -107,12 +107,12 @@ __chtoor-setup()
     return 11
   done
 
-  sudo dd status=none if=/dev/null of="$CHTOOR_DIR/$CHTOOR_MARKER"  &&
-  sudo chown "$USER:$USER" "$CHTOOR_DIR/$CHTOOR_MARKER"  ||
-  {
+  if sudo dd status=none if=/dev/null of="$CHTOOR_DIR/$CHTOOR_MARKER"; then
+    sudo chown "$USER:$USER" "$CHTOOR_DIR/$CHTOOR_MARKER"
+  else
     echo >&2 "$0: chtoor-setup: '$CHTOOR_DIR/$CHTOOR_MARKER' -- cannot create marker file"
     return 12
-  }
+  fi
 
   local entry=''
   while IFS='' read -r entry; do
