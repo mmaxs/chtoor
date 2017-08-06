@@ -19,10 +19,10 @@ is-same()
 
 declare USER="$(whoami)"  # set it to the effective user ID name
 declare CHTOOR_MARKER=".chtoor"  # the file name to visually denote the new root environment establishment
-# For quick recognizing that new root environment setup has been performed (i.e. some bind mounts to
-# '${CHTOOR_DIR}/new_root' are created) the CHTOOR_MARKER file is placed into CHTOOR_DIR.  If after
-# setup complete, the '${CHTOOR_DIR}/new_root' directory appears to be write enabled, and it does
-# not appear to be bind-mounted to the current root directory, the CHTOOR_MARKER file is
+# For quick recognizing that the new root environment setup has been performed (i.e. some bind
+# mounts to '${CHTOOR_DIR}/new_root' are created) the CHTOOR_MARKER file is placed into CHTOOR_DIR.
+# If after setup complete, the '${CHTOOR_DIR}/new_root' directory appears to be write enabled, and
+# it does not appear to be bind-mounted to the current root directory, the CHTOOR_MARKER file is
 # additionally created therein for the new root directory hierarchy can be identified in some visual
 # way after switching into it.
 
@@ -53,17 +53,9 @@ declare CHTOOR_DIR="$1"  # the directory where to create the 'new_root'
 [ -d "$CHTOOR_DIR" ] || { echo >&2 "$0: CHTOOR_DIR: '$CHTOOR_DIR' -- not exist / not a directory"; exit 2; }
 
 declare NEW_ROOT="$CHTOOR_DIR/new_root"
-if [ -e "$NEW_ROOT" ]; then
-  [ -d "$NEW_ROOT" ] || { echo >&2 "$0: new_root: '$NEW_ROOT' -- not a directory"; exit 3; }
-  mountpoint -q "$NEW_ROOT" && { echo >&2 "$0: new_root: '$NEW_ROOT' -- is a mountpoint"; exit 3; }
-  is-same "$NEW_ROOT" "/" && { echo >&2 "$0: new root: '$NEW_ROOT' -- is the current root"; exit 3; }
-else
-  mkdir "$NEW_ROOT" || { echo >&2 "$0: new_root: '$NEW_ROOT' -- cannot create directory"; exit 3; }
-fi
-declare NEW_ROOT_REALPATH="$(realpath -q -e "$NEW_ROOT")"
 
-declare RUN="/bin/bash -l"  # the command to run with the changed root directory
-declare EXPORT=(TERM PATH DISPLAY)  # shell variables for export into new root environment
+declare RUN="/bin/bash -l -i"  # the command to run with the changed root directory
+declare EXPORT=(DISPLAY)  # shell variables for export into new root environment
 declare -A SETUP=(  # some minimal defaults to setup the 'new_root' directory hierarchy
     [/]=rbind-ro
     [/home/"$USER"]=own-create
@@ -73,7 +65,15 @@ declare -A SETUP=(  # some minimal defaults to setup the 'new_root' directory hi
 )
 
 case "$OPT_MODE" in
-  (go | setup)
+  (setup)
+      if [ -e "$NEW_ROOT" ]; then
+        [ -d "$NEW_ROOT" ] || { echo >&2 "$0: new root: '$NEW_ROOT' -- not a directory"; exit 3; }
+        mountpoint -q "$NEW_ROOT" && { echo >&2 "$0: new root: '$NEW_ROOT' -- is a mountpoint"; exit 3; }
+        is-same "$NEW_ROOT" "/" && { echo >&2 "$0: new root: '$NEW_ROOT' -- is the current root"; exit 3; }
+      else
+        mkdir "$NEW_ROOT" || { echo >&2 "$0: new root: '$NEW_ROOT' -- cannot create directory"; exit 3; }
+      fi
+
       [ -z "$OPT_CONFIG_FILE" ] && OPT_CONFIG_FILE="$CHTOOR_DIR/chtoor.conf"
       if [ -f "$OPT_CONFIG_FILE" ]; then
         source "$OPT_CONFIG_FILE" || { echo >&2 "$0: config file: '$OPT_CONFIG_FILE' -- source failure"; exit 4; }
@@ -84,11 +84,16 @@ case "$OPT_MODE" in
   (go)
       RUN="${2:-$RUN}"
       ;;
+  (undo)
+      [ -d "$NEW_ROOT" ] || { echo >&2 "$0: new root: '$NEW_ROOT' -- not exist / not a directory"; exit 3; }
+      ;;
 esac
+declare NEW_ROOT_REALPATH="$(realpath -q -e "$NEW_ROOT")"
 
 
 __chtoor-setup()
 {
+  ## verify setup methods
   local method=''
   for method in "${SETUP[@]}"; do
     [ -z "$method" ] && continue
@@ -97,6 +102,7 @@ __chtoor-setup()
     return 11
   done
 
+  ## create a setup establishment marker file
   if sudo dd status=none if=/dev/null of="$CHTOOR_DIR/$CHTOOR_MARKER"; then
     sudo chown "$USER:$USER" "$CHTOOR_DIR/$CHTOOR_MARKER"
   else
@@ -104,6 +110,7 @@ __chtoor-setup()
     return 12
   fi
 
+  ## do setup the new root hierarchy
   local entry=''
   while IFS='' read -r entry; do
     [ -z "$entry" ] && continue
@@ -119,15 +126,25 @@ __chtoor-setup()
     echo
   done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!SETUP[*]}")
 
+  ## try to visually denote the new root hierarchy
   if [ ! is-same "$NEW_ROOT" "/" -a -w "$NEW_ROOT" ]; then
     sudo dd status=none if=/dev/null of="$NEW_ROOT/$CHTOOR_MARKER"  &&
     sudo chown "$USER:$USER" "$NEW_ROOT/$CHTOOR_MARKER"
   fi
 
+  ## print a summary of the created bind-mounts
   findmnt --list --output TARGET,SOURCE,PROPAGATION,FSTYPE,OPTIONS  |
   gawk -v P="$NEW_ROOT_REALPATH" -e 'NR==1 {print; next}; index($0, P) {print | "LC_ALL=C sort"}'
 
   return 0
+}
+__chtoor-go()
+{
+  [ -f "$CHTOOR_DIR/$CHTOOR_MARKER" ]  ||
+  __chtoor-setup  &&
+  {
+    sudo chroot -- "$NEW_ROOT" su "$USER" "$RUN"
+  }
 }
 
 exit
