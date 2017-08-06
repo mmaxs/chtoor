@@ -129,20 +129,13 @@ __chtoor-setup()
     echo
   done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!SETUP[*]}")
 
-  mountpoint -q "$NEW_ROOT"  &&
-  {
-    local root_src="$(findmnt --raw --noheadings --output SOURCE --uniq /)"
-    local new_root_src="$(findmnt --raw --noheadings --output SOURCE --uniq "$NEW_ROOT")"
-    test "$root_src" = "$new_root_src"
-  }  ||
-  if [ -w "$NEW_ROOT" ]; then
+  if [ ! is-same "$NEW_ROOT" "/" -a -w "$NEW_ROOT" ]; then
     sudo dd status=none if=/dev/null of="$NEW_ROOT/$CHTOOR_MARKER"  &&
     sudo chown "$USER:$USER" "$NEW_ROOT/$CHTOOR_MARKER"
   fi
 
-  findmnt --list  |
-  sed -b -n -e '1{p; b;}; \'$'\x01'"${NEW_ROOT_REALPATH}"$'\x01''p'  |
-  awk -e 'NR>1 {print | "LC_ALL=C sort"; next}; NR==1 {print}'
+  findmnt --list --output TARGET,SOURCE,PROPAGATION,FSTYPE,OPTIONS  |
+  gawk -v P="$NEW_ROOT_REALPATH" -e 'NR==1 {print; next}; index($0, P) {print | "LC_ALL=C sort"}'
 
   return 0
 }
