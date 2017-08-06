@@ -1,0 +1,490 @@
+#! /bin/bash
+# vi: tw=100
+
+declare USER="$(whoami)"  # set it to the effective user ID name
+declare CHTOOR_MARKER=".chtoor"  # the file name to visually denote the new root environment establishment
+# For quick recognizing that new root environment setup has been performed (i.e. some bind mounts to
+# '${CHTOOR_DIR}/new_root' are created) the CHTOOR_MARKER file is placed into CHTOOR_DIR.  If after
+# setup complete, the '${CHTOOR_DIR}/new_root' directory appears to be write enabled, and it does
+# not appear to be bind-mounted to the current root directory, the CHTOOR_MARKER file is
+# additionally created therein for the new root directory hierarchy can be identified in some visual
+# way after switching into it.
+
+declare OPT_MODE="go"
+declare OPT_CONFIG_FILE=""
+while getopts "f:gsu" OPT; do
+  case "$OPT" in
+    f)  OPT_CONFIG_FILE="$OPTARG"
+        if [ ! -f "$OPT_CONFIG_FILE" ]; then
+          echo >&2 "$0: config file: '$OPT_CONFIG_FILE' -- no such file"
+          exit 1
+        fi
+        ;;
+    g)  OPT_MODE="go"
+        ;;
+    s)  OPT_MODE="setup"
+        ;;
+    u)  OPT_MODE="undo"
+        ;;
+   \?)  exit 1
+        ;;
+  esac
+done
+shift $((OPTIND-1))
+
+declare CHTOOR_DIR="$1"  # the directory where to create the 'new_root'
+[ -z "$CHTOOR_DIR" ] && { echo >&2 "$0: CHTOOR_DIR: directory not specified"; exit 2; }
+[ -d "$CHTOOR_DIR" ] || { echo >&2 "$0: CHTOOR_DIR: '$CHTOOR_DIR' -- not exist / not a directory"; exit 2; }
+
+declare NEW_ROOT="$CHTOOR_DIR/new_root"
+declare NEW_ROOT_REALPATH="$(realpath -q -e "$NEW_ROOT")"
+if [ -e "$NEW_ROOT" ]; then
+  [ -d "$NEW_ROOT" ] || { echo >&2 "$0: new_root: '$NEW_ROOT' -- not a directory"; exit 3; }
+  mountpoint -q "$NEW_ROOT" && { echo >&2 "$0: new_root: '$NEW_ROOT' -- is a mountpoint"; exit 3; }
+  [ "$NEW_ROOT_REALPATH" = / ] && { echo >&2 "$0: new root: '$NEW_ROOT' -- is the current root"; exit 3; }
+else
+  mkdir "$NEW_ROOT" || { echo >&2 "$0: new_root: '$NEW_ROOT' -- cannot create directory"; exit 3; }
+fi
+
+declare RUN="/bin/bash -l"  # the command to run with the changed root directory
+declare EXPORT=(TERM PATH DISPLAY)  # shell variables for export into new root environment
+declare -A SETUP=(  # some minimal defaults to setup the 'new_root' directory hierarchy
+    [/]=rbind-ro
+    [/home/"$USER"]=own-create
+    [/home/"$USER"/.bash_profile]=own-copy-missing
+    [/home/"$USER"/.bashrc]=own-copy-missing
+    [/home/"$USER"/.inputrc]=own-copy-missing
+)
+
+case "$OPT_MODE" in
+  (go | setup)
+      [ -z "$OPT_CONFIG_FILE" ] && OPT_CONFIG_FILE="$CHTOOR_DIR/chtoor.conf"
+      if [ -f "$OPT_CONFIG_FILE" ]; then
+        source "$OPT_CONFIG_FILE" || { echo >&2 "$0: config file: '$OPT_CONFIG_FILE' -- source failure"; exit 4; }
+      else
+        echo >&2 "$0: config file: '$OPT_CONFIG_FILE' -- not found"
+        echo >&2 "$0: fall back to minimal defaults:"
+        echo >&2 "$0: EXPORT=(${EXPORT[*]})"
+        echo >&2 "$0: SETUP=("
+        (
+          declare entry=''
+          while IFS='' read -r entry; do
+            echo >&2 "$0:    [$entry]=${SETUP[$entry]}"
+          done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!SETUP[*]}")
+        )
+        echo >&2 "$0: )"
+      fi
+      ;;&
+  (go)
+      RUN="${2:-$RUN}"
+      ;;
+esac
+
+
+is-same()
+{
+  local LHS="$(realpath -q -e "$1")" RHS="$(realpath -q -e "$2")"
+  [ -n "$LHS" -a -n "$RHS" ]  &&
+  {
+    test "$LHS" = "$RHS"  ||
+    {
+      mountpoint -q "$LHS"  &&
+      {
+        LHS="$(findmnt --raw --noheadings --output SOURCE --uniq "$LHS")"
+        LHS="$(sed -b -e 's/^[^[]\+\[\(.\+\)\]$/\1/' <<<"$LHS")"
+      }
+      mountpoint -q "$RHS"  &&
+      {
+        RHS="$(findmnt --raw --noheadings --output SOURCE --uniq "$RHS")"
+        RHS="$(sed -b -e 's/^[^[]\+\[\(.\+\)\]$/\1/' <<<"$RHS")"
+      }
+      test "$LHS" = "$RHS"
+    }
+  }
+}
+is-root()  { is-same "$1" /; }
+
+__chtoor-setup()
+{
+  local method=''
+  for method in "${SETUP[@]}"; do
+    [ -z "$method" ] && continue
+    declare -F "__$method" >/dev/null && continue
+    echo >&2 "$0: SETUP: '$method' -- unknown method"
+    return 11
+  done
+
+  sudo dd status=none if=/dev/null of="$CHTOOR_DIR/$CHTOOR_MARKER"  &&
+  sudo chown "$USER:$USER" "$CHTOOR_DIR/$CHTOOR_MARKER"  ||
+  {
+    echo >&2 "$0: chtoor-setup: '$CHTOOR_DIR/$CHTOOR_MARKER' -- cannot create marker file"
+    return 12
+  }
+
+  local entry=''
+  while IFS='' read -r entry; do
+    [ -z "$entry" ] && continue
+    method="${SETUP[$entry]}"
+    [ -z "$method" ] && continue
+    echo "[$entry]=$method"
+    "__$method" "$entry"  ||
+    {
+      local -i err_code=$?
+      echo >&2 "$0: chtoor-setup: $method error $err_code"
+      return "$err_code";
+    }
+    echo
+  done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!SETUP[*]}")
+
+  mountpoint -q "$NEW_ROOT"  &&
+  {
+    local root_src="$(findmnt --raw --noheadings --output SOURCE --uniq /)"
+    local new_root_src="$(findmnt --raw --noheadings --output SOURCE --uniq "$NEW_ROOT")"
+    test "$root_src" = "$new_root_src"
+  }  ||
+  if [ -w "$NEW_ROOT" ]; then
+    sudo dd status=none if=/dev/null of="$NEW_ROOT/$CHTOOR_MARKER"  &&
+    sudo chown "$USER:$USER" "$NEW_ROOT/$CHTOOR_MARKER"
+  fi
+
+  findmnt --list  |
+  sed -b -n -e '1{p; b;}; \'$'\x01'"${NEW_ROOT_REALPATH}"$'\x01''p'  |
+  awk -e 'NR>1 {print | "LC_ALL=C sort"; next}; NR==1 {print}'
+
+  return 0
+}
+
+exit
+
+NEW_ROOT="${1:-$NEW_ROOT}"
+[ -z "$NEW_ROOT" ] && { echo >&2 "$0: new root: directory not specified"; exit 3; }
+[ -d "$NEW_ROOT" ] || { echo >&2 "$0: new root: '$NEW_ROOT' -- not exist / not a directory"; exit 4; }
+declare NEW_ROOT_REALPATH="$(realpath -q -e "$NEW_ROOT")"
+[ "$NEW_ROOT_REALPATH" = "/" ] && { echo >&2 "$0: new root: '$NEW_ROOT' -- current root directory"; exit 5; }
+
+RUN="${2:-$RUN}"
+
+shift 2
+
+
+
+exit
+
+
+is-root()  { [ "$(realpath -q -e "$1")" = "/" ]; }
+is-same()
+{
+  local LHS="$(realpath -q -e "$1")" RHS="$(realpath -q -e "$2")"
+  [ -n "$LHS" -a -n "$RHS" -a "$LHS" = "$RHS" ]
+}
+
+
+__do-bind()
+{
+  local SOURCE="$1" CHROOT="$2" TARGET="$2/$1"
+  [ -n "$SOURCE" ] || return 1
+  [ -d "$CHROOT" ] || return 2
+  ! is-root "$CHROOT" || return 3
+  ! mountpoint -q "$TARGET" || return 4
+  ! is-same "$SOURCE" "$TARGET" || return 6
+
+  local -i opt_ro=$(($3&1)) opt_recursive=$(($3&2))
+
+  local source_type="$(stat --printf=%F "$SOURCE")"
+  case "$source_type" in
+    (directory)
+        if [ ! -d "$TARGET" ]; then
+          [ ! -e "$TARGET" ]  &&
+          {
+            sudo mkdir -v -p "$TARGET"  &&
+            sudo chown -v "$USER:$USER" "$TARGET"
+          }  ||
+          return 41
+        fi
+        if sudo mount -v --bind "$SOURCE" "$TARGET"; then
+          [ "$opt_ro" -ne 0 ] && sudo mount -v -o remount,ro,bind "$SOURCE" "$TARGET"
+          if [ "$opt_recursive" -ne 0 ]; then
+            findmnt --raw --noheadings --output TARGET --submounts --uniq '/'  |
+            LC_ALL=C sort  |
+            while IFS='' read -r src; do
+              [ "$src" = "$SOURCE" ] && continue
+              [ "${src:0:${#SOURCE}}" = "$SOURCE" ] && __do-bind "$src" "$CHROOT" $opt_ro
+            done
+          fi
+        else
+          return 51
+        fi
+        ;;
+    (regular\ file)
+        if [ ! -f "$TARGET" ]; then
+          [ ! -e "$TARGET" ]  &&
+          {
+            sudo dd status=none if=/dev/null of="$TARGET"  &&
+            sudo chown -v "$USER:$USER" "$TARGET"
+          }  ||
+          return 42
+        fi
+        if sudo mount -v --bind "$SOURCE" "$TARGET"; then
+          [ "$opt_ro" -ne 0 ] && sudo mount -v -o remount,ro,bind "$SOURCE" "$TARGET"
+        else
+          return 52
+        fi
+        ;;
+    (symbolic\ link)
+        sudo cp -v -P --preserve=all -T "$SOURCE" "$TARGET" || return 43
+        ;;
+    (*)
+        return 5
+        ;;
+  esac
+  return 0
+}
+bind()  { __do-bind "$1" "$2" 0; }
+bind-ro()  { __do-bind "$1" "$2" 1; }
+rbind()  { __do-bind "$1" "$2" 2; }
+rbind-ro()  { __do-bind "$1" "$2" 3; }
+
+__undo-bind()
+{
+  local SOURCE="$1" CHROOT="$2" TARGET="$2/$1"
+  [ -n "$SOURCE" ] || return 1
+  [ -d "$CHROOT" ] || return 2
+  ! is-root "$CHROOT" || return 3
+  ! is-same "$SOURCE" "$TARGET" || return 6
+
+  shift 2
+
+  local source_type="$(stat --printf=%F "$SOURCE")"
+  case "$source_type" in
+    (directory | regular\ file)
+        if mountpoint "$TARGET"; then
+          sudo umount -v "$@" "$TARGET"  ||
+          {
+            sudo fuser -v -m "$TARGET"
+            return 4
+          }
+        fi
+        ;;
+    (symbolic\ link)
+        if [ -L "$TARGET" ]; then
+          sudo rm -v "$TARGET"  || return 43
+        else
+          echo >&2 "__undo-bind: '$TARGET' is not a symbolic link"
+        fi
+        ;;
+    (*)
+        return 5
+        ;;
+  esac
+}
+undo-bind()  { __undo-bind "$1" "$2"; }
+undo-bind-ro()  { __undo-bind "$1" "$2"; }
+undo-rbind()  { __undo-bind "$1" "$2" -R; }
+undo-rbind-ro()  { __undo-bind "$1" "$2" -R; }
+
+
+__clone_target_path()
+{
+  local SOURCE="$1" CHROOT="$2" TARGET="$2/$1"
+  [ -n "$SOURCE" ] || return 1
+  [ -d "$CHROOT" ] || return 2
+  ! is-root "$CHROOT" || return 3
+  ! mountpoint -q "$TARGET" || return 4
+  ! is-same "$SOURCE" "$TARGET" || return 5
+
+  local src="" tgt="$CHROOT" pth=""
+  while IFC='' read -r -d '/' pth || [ "$pth" ]; do
+    [ -z "$pth" ] && continue;
+    [ "$pth" = "." ] && { src="${src:-.}"; continue; }
+    src="$src/$pth"
+    tgt="$tgt/$pth"
+    [ "$pth" = ".." ] && continue
+
+    if [ -e "$src" -a ! -d "$src" ]; then
+      echo >&2 "$0: '$tgt' -- $(stat --printf=%F "$src") in the path to '$TARGET'"
+      return 11
+    fi
+    if mountpoint -q "$tgt"; then
+      echo >&2 "$0: '$tgt' -- mount point in the path to '$TARGET'"
+      return 14
+    fi
+
+    sudo mkdir -v -p "$tgt" || return 10
+    sudo chown -v --reference="$src" "$tgt"
+    sudo chmod -v --reference="$src" "$tgt"
+    sudo chcon -v --reference="$src" "$tgt"
+  done < <(dirname "$SOURCE")
+}
+
+__create()
+{
+  local SOURCE="$1" CHROOT="$2" TARGET="$2/$1"
+  [ -n "$SOURCE" ] || return 1
+  [ -d "$CHROOT" ] || return 2
+  ! is-root "$CHROOT" || return 3
+  ! mountpoint -q "$TARGET" || return 4
+  ! is-same "$SOURCE" "$TARGET" || return 5
+
+  local source_type="$(stat --printf=%F "$SOURCE")"
+  case "$source_type" in
+    (directory)
+        __clone_target_path "$SOURCE" "$CHROOT" || return
+        sudo mkdir -v -p "$TARGET" || return 41
+        sudo chown -v --reference="$SOURCE" "$TARGET"
+        sudo chmod -v --reference="$SOURCE" "$TARGET"
+        sudo chcon -v --reference="$SOURCE" "$TARGET"
+        ;;
+    (regular\ file)
+        __clone_target_path "$SOURCE" "$CHROOT" || return
+        sudo dd status=none if=/dev/null of="$TARGET" || return 42;
+        sudo chown -v --reference="$SOURCE" "$TARGET"
+        sudo chmod -v --reference="$SOURCE" "$TARGET"
+        sudo chcon -v --reference="$SOURCE" "$TARGET"
+        ;;
+    (symbolic\ link)
+        __clone_target_path "$SOURCE" "$CHROOT" || return
+        sudo cp -v -P --preserve=all -T "$SOURCE" "$TARGET" || return 43
+        ;;
+    (*)
+        return 6
+        ;;
+  esac
+}
+create()  { __create "$1" "$2"; }
+create-if-not-exist()  { [ -e "$2/$1" ] || __create "$1" "$2"; }
+
+
+__copy()
+{
+  local SOURCE="$1" CHROOT="$2" TARGET="$2/$1"
+  [ -n "$SOURCE" ] || return 1
+  [ -d "$CHROOT" ] || return 2
+  ! is-root "$CHROOT" || return 3
+  ! mountpoint -q "$TARGET" || return 4
+  ! is-same "$SOURCE" "$TARGET" || return 5
+
+  shift 2
+
+  local source_type="$(stat --printf=%F "$SOURCE")"
+  case "$source_type" in
+    (directory)
+        __clone_target_path "$SOURCE" "$CHROOT" || return
+        sudo cp -v --preserve=all -R "$@" -T "$SOURCE" "$TARGET" || return 41
+        ;;
+    (regular\ file)
+        __clone_target_path "$SOURCE" "$CHROOT" || return
+        sudo cp -v --preserve=all "$@" -T "$SOURCE" "$TARGET" || return 42
+        ;;
+    (symbolic\ link)
+        __clone_target_path "$SOURCE" "$CHROOT" || return
+        sudo cp -v -P --preserve=all "$@" -T "$SOURCE" "$TARGET" || return 43
+        ;;
+    (*)
+        return 5
+        ;;
+  esac
+}
+copy()  { __copy "$1" "$2"; }
+copy-if-not-exist()  { [ -e "$2/$1" ] || __copy "$1" "$2"; }
+copy-update()  { __copy "$1" "$2" -u; }
+
+
+chroot-setup()
+{
+  local CHROOT="$1"
+  [ -d "$CHROOT" ] || return 1
+  ! is-root "$CHROOT" || return 2
+  ! mountpoint -q "$CHROOT" || return 3
+
+  local source="" method=""
+  for method in "${CHROOT_SETUP[@]}"; do
+    method="${method%%!*}"
+    [ -z "$method" ] && continue
+    if ! declare -F "$method" >/dev/null; then
+      echo >&2 "$0: unknown setup method -- '$method'"
+      return 4
+    fi
+  done
+
+  sudo dd status=none if=/dev/null of="$CHROOT/.chroot"  &&
+  sudo chown "$USER:$USER" "$CHROOT/.chroot"  ||
+  return 5
+
+  while IFS='' read -r source; do
+    [ -z "$source" ] && continue
+    method="${CHROOT_SETUP[$source]%%!*}"
+    [ -z "$method" ] && continue
+    echo "[$source]: $method"
+    "$method" "$source" "$CHROOT"  ||
+    {
+      local -i err_code=$?
+      echo >&2 "$0: $method error $err_code"
+      return "$err_code";
+    }
+    echo
+  done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!CHROOT_SETUP[*]}")
+
+  findmnt --list  |
+  sed -b -n -e '1{p; b;}; \'$'\x01'"${CHROOT}"$'\x01''p'  |
+  awk -e 'NR>1 {print | "LC_ALL=C sort"; next}; NR==1'
+}
+chroot-undo()
+{
+  local CHROOT="$1"
+  [ -d "$CHROOT" ] || return 1
+  ! is-root "$CHROOT" || return 2
+  ! mountpoint -q "$CHROOT" || return 3
+
+  local source="" method=""
+  for method in "${CHROOT_SETUP[@]}"; do
+    method="${method##*!}"
+    [ -z "$method" ] && continue
+    method="undo-$method"
+    if ! declare -F "$method" >/dev/null; then
+      echo >&2 "$0: unknown undo method -- '$method'"
+      return 4
+    fi
+  done
+
+  while IFS='' read -r source; do
+    [ -z "$source" ] && continue
+    method="${CHROOT_SETUP[$source]##*!}"
+    [ -z "$method" ] && continue
+    method="undo-$method"
+    echo "[$source]: $method"
+    "$method" "$source" "$CHROOT"  ||
+    {
+      local -i err_code=$?
+      echo >&2 "$0: $method error $err_code"
+      return "$err_code";
+    }
+    echo
+  done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!CHROOT_SETUP[*]}")
+
+  findmnt --list  |
+  sed -b -n -e '1{p; b;}; \'$'\x01'"${CHROOT}"$'\x01''p'  |
+  awk -e 'NR>1 {print | "LC_ALL=C sort"; next}; NR==1'
+
+  rm -v "$CHROOT/.chroot"
+}
+
+
+chroot-go()
+{
+  local CHROOT="$1"
+  [ -d "$CHROOT" ] || return 1
+  ! is-root "$CHROOT" || return 2
+
+  shift
+
+  [ -f "$CHROOT/.chroot" ]  ||
+  chroot-setup "$CHROOT"  &&
+  {
+    sudo chroot -- "$CHROOT" su "$USER" "$@"
+  }
+}
+
+
+
+chroot-"$OPT_COMMAND" "$@"
+
