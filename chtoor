@@ -1,21 +1,6 @@
 #! /bin/bash
 
 
-__is-same() #10
-{
-  local LHS="$(realpath -q -e "$1")" RHS="$(realpath -q -e "$2")"
-  [ -n "$LHS" -a -n "$RHS" ]  &&
-  {
-    test "$LHS" = "$RHS"  ||
-    {
-      LHS="$(stat --printf="%d:%i" "$LHS")"
-      RHS="$(stat --printf="%d:%i" "$RHS")"
-      test "$LHS" = "$RHS"
-    }
-  }
-}
-
-
 declare USER="$(whoami)"  # set it to the effective user ID name
 declare CHTOOR_MARKER=".chtoor"  # the file name to visually denote the new root environment establishment
 # For quick recognizing that the new root environment setup has been performed (i.e. some bind
@@ -31,7 +16,7 @@ while getopts "f:gsu" OPT; do
   case "$OPT" in
     f)  OPT_CONFIG_FILE="$OPTARG"
         if [ ! -f "$OPT_CONFIG_FILE" ]; then
-          echo >&2 "$0: config file: '$OPT_CONFIG_FILE' -- no such file"
+          echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- no such file; exit"
           exit 1
         fi
         ;;
@@ -48,8 +33,8 @@ done
 shift $((OPTIND-1))
 
 declare CHTOOR_DIR="$1"  # the directory where to create the 'new_root'
-[ -z "$CHTOOR_DIR" ] && { echo >&2 "$0: CHTOOR_DIR: directory not specified"; exit 2; }
-[ -d "$CHTOOR_DIR" ] || { echo >&2 "$0: CHTOOR_DIR: '$CHTOOR_DIR' -- not exist / not a directory"; exit 2; }
+[ -z "$CHTOOR_DIR" ] && { echo >&2 "*** CHTOOR_DIR: directory not specified; exit"; exit 2; }
+[ -d "$CHTOOR_DIR" ] || { echo >&2 "*** CHTOOR_DIR: '$CHTOOR_DIR' -- not exist / not a directory; exit"; exit 2; }
 
 declare NEW_ROOT="$CHTOOR_DIR/new_root"
 
@@ -64,15 +49,30 @@ declare -A SETUP=(  # some minimal defaults to setup the 'new_root' directory hi
 )
 
 
+__is-same() #10
+{
+  local LHS="$(realpath -q -e "$1")" RHS="$(realpath -q -e "$2")"
+  [ -n "$LHS" -a -n "$RHS" ]  &&
+  {
+    test "$LHS" = "$RHS"  ||
+    {
+      LHS="$(stat --printf="%d:%i" "$LHS")"
+      RHS="$(stat --printf="%d:%i" "$RHS")"
+      test "$LHS" = "$RHS"
+    }
+  }
+}
+
 __verify-setup-methods() #20
 {
   local method=''
   for method in "${SETUP[@]}"; do
     [ -z "$method" ] && continue
     declare -F "$method" >/dev/null && continue
-    echo >&2 "$0: SETUP: '$method' -- unknown method"
-    return 21
+    echo >&2 "*** SETUP: '$method' -- unknown method; exit"
+    exit 21
   done
+  return "$err_code"
 }
 
 case "$OPT_MODE" in
@@ -80,12 +80,12 @@ case "$OPT_MODE" in
       ## read the config file
       [ -z "$OPT_CONFIG_FILE" ] && OPT_CONFIG_FILE="$CHTOOR_DIR/chtoor.conf"
       if [ -f "$OPT_CONFIG_FILE" ]; then
-        source "$OPT_CONFIG_FILE" || { echo >&2 "$0: config file: '$OPT_CONFIG_FILE' -- source failure"; exit 4; }
+        source "$OPT_CONFIG_FILE" || { echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- source failure; exit"; exit 4; }
       fi
       ;;&
   (go | setup)
       if [ ! -f "$OPT_CONFIG_FILE" ]; then
-        echo >&2 "$0: config file: '$OPT_CONFIG_FILE' -- not found; fall back to minimal defaults"
+        echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- not found; fall back to minimal defaults"
       fi
       ;;&
   (go)
@@ -97,15 +97,14 @@ case "$OPT_MODE" in
       ;;
   (undo)
       if [ ! -f "$OPT_CONFIG_FILE" ]; then
-        echo >&2 "$0: config file: '$OPT_CONFIG_FILE' -- not found; minimal default setup assumed"
+        echo >&2 ´"*** config file: '$OPT_CONFIG_FILE' -- not found; minimal default setup assumed"
       fi
       ;;
 esac
 
 
-__print-bind-mounts()
+__print-bind-mounts()  # print a summary of the existing bind-mounts for NEW_ROOT
 {
-  ## print a summary of the existing bind-mounts for NEW_ROOT
   local new_root_realpath="$(realpath -q -e "$NEW_ROOT")"
   findmnt --list --output TARGET,SOURCE,PROPAGATION,FSTYPE,OPTIONS  |
   gawk -v P="$new_root_realpath" -e 'NR==1 {print; next}; index($0, P) {print | "LC_ALL=C sort"}'
@@ -116,17 +115,17 @@ __chtoor-setup() #30
   ## create the setup establishment marker file
   dd status=none if=/dev/null of="$CHTOOR_DIR/$CHTOOR_MARKER"  ||
   {
-    echo >&2 "$0: chtoor-setup: '$CHTOOR_DIR/$CHTOOR_MARKER' -- cannot create file"
+    echo >&2 "*** chtoor-setup: '$CHTOOR_DIR/$CHTOOR_MARKER' -- cannot create file; return"
     return 31
   }
 
   ## create the new root directory
   if [ -e "$NEW_ROOT" ]; then
-    [ -d "$NEW_ROOT" ] || { echo >&2 "$0: chtoor-setup: '$NEW_ROOT' -- not a directory"; return 32; }
-    mountpoint -q "$NEW_ROOT" && { echo >&2 "$0: chtoor-setup: '$NEW_ROOT' -- is a mountpoint"; return 32; }
-    __is-same "$NEW_ROOT" "/" && { echo >&2 "$0: chtoor-setup: '$NEW_ROOT' -- is the current root"; return 32; }
+    [ -d "$NEW_ROOT" ] || { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- not a directory; return"; return 32; }
+    mountpoint -q "$NEW_ROOT" && { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- is a mountpoint; return"; return 32; }
+    __is-same "$NEW_ROOT" "/" && { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- is the current root; return"; return 32; }
   else
-    mkdir -v "$NEW_ROOT" || { echo >&2 "$0: chtoor-setup: '$NEW_ROOT' -- cannot create directory"; return 32; }
+    mkdir -v "$NEW_ROOT" || { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- cannot create directory; return"; return 32; }
   fi
 
   ## do setup the new root hierarchy
@@ -139,7 +138,7 @@ __chtoor-setup() #30
     "$method" "$entry"  ||
     {
       local -i err_code=$?
-      echo >&2 "$0: chtoor-setup: $method error $err_code"
+      echo >&2 "*** chtoor-setup: $method error $err_code; abort"
       return "$err_code";
     }
   done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!SETUP[*]}")
@@ -166,8 +165,8 @@ __chtoor-go() #40
 
 __chtoor-undo() #50
 {
-  [ -d "$NEW_ROOT" ] || { echo >&2 "$0: chtoor-undo: '$NEW_ROOT' -- not a directory"; return 51; }
-  [ "$(realpath -q -e "$NEW_ROOT")" = "/" ] && { echo >&2 "$0: chtoor-undo: '$NEW_ROOT' -- is the current root mountpoint"; return 51; }
+  [ -d "$NEW_ROOT" ] || { echo >&2 "*** chtoor-undo: '$NEW_ROOT' -- not a directory; return"; return 51; }
+  [ "$(realpath -q -e "$NEW_ROOT")" = "/" ] && { echo >&2 "*** chtoor-undo: '$NEW_ROOT' -- is the current root mountpoint; return"; return 51; }
 
   ## undo setup for new root hierarchy
   local method='' entry=''
@@ -175,17 +174,17 @@ __chtoor-undo() #50
     [ -z "$entry" ] && continue
     method="${SETUP[$entry]}"
     [ -z "$method" ] && continue
-    method="undo-$method"
     echo "[$entry]=$method"
+    method="undo-$method"
     if declare -F "$method" >/dev/null; then
       "$method" "$entry"  ||
       {
         local -i err_code=$?
-        echo >&2 "$0: chtoor-undo: $method error $err_code"
+        echo >&2 "*** chtoor-undo: $method error $err_code; abort"
         return "$err_code";
       }
     else
-      echo >&2 "$0: chtoor-undo: '$method' -- unknown method skipped"
+      echo >&2 "*** SETUP: '$method' -- unknown method; skipped"
     fi
   done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!SETUP[*]}")
 
@@ -197,6 +196,7 @@ __chtoor-undo() #50
   rm -v "$CHTOOR_DIR/$CHTOOR_MARKER"
 }
 
+__chtoor-undo
 exit
 
 
