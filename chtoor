@@ -65,14 +65,28 @@ __is-same() #10
 
 __verify-setup-methods() #20
 {
-  local method=''
-  for method in "${SETUP[@]}"; do
-    [ -z "$method" ] && continue
+  local method='' entry_methods=''
+  for entry_methods in "${SETUP[@]}"; do
+    method="${entry_methods%%!*}"
+    [ -z "$method" ] && continue  # skip empty records
     declare -F "$method" >/dev/null && continue
-    echo >&2 "*** SETUP: '$method' -- unknown method; exit"
+    echo >&2 "*** SETUP: '$method' -- unknown setup method; exit"
     exit 21
   done
-  return "$err_code"
+  return 0
+}
+__verify-undo-methods() #20
+{
+  local method='' entry_methods=''
+  for entry_methods in "${SETUP[@]}"; do
+    method="${entry_methods##*!}"
+    [ -z "$method" ] && continue  # skip empty records
+    [ "$method" = "$entry_methods" ] && continue  # no undo method is specified; no matter if the default corresponding undo method exists
+    declare -F "$method" >/dev/null && continue
+    echo >&2 "*** SETUP: '$method' -- unknown undo method; exit"
+    exit 21
+  done
+  return 0
 }
 
 case "$OPT_MODE" in
@@ -97,17 +111,17 @@ case "$OPT_MODE" in
       ;;
   (undo)
       if [ ! -f "$OPT_CONFIG_FILE" ]; then
-        echo >&2 ´"*** config file: '$OPT_CONFIG_FILE' -- not found; minimal default setup assumed"
+        echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- not found; minimal default setup assumed"
       fi
+      __verify-undo-methods
       ;;
 esac
 
 
 __print-bind-mounts()  # print a summary of the existing bind-mounts for NEW_ROOT
 {
-  local new_root_realpath="$(realpath -q -e "$NEW_ROOT")"
   findmnt --list --output TARGET,SOURCE,PROPAGATION,FSTYPE,OPTIONS  |
-  gawk -v P="$new_root_realpath" -e 'NR==1 {print; next}; index($0, P) {print | "LC_ALL=C sort"}'
+  gawk -v P="$(realpath -q -e "$NEW_ROOT")" -e 'NR==1 {print; next}; index($0, P) {print | "LC_ALL=C sort"}'
 }
 
 __chtoor-setup() #30
@@ -129,12 +143,13 @@ __chtoor-setup() #30
   fi
 
   ## do setup the new root hierarchy
-  local method='' entry=''
+  local method='' entry_methods='' entry=''
   while IFS='' read -r entry; do
     [ -z "$entry" ] && continue
-    method="${SETUP[$entry]}"
+    entry_methods="${SETUP[$entry]}"
+    method="${entry_methods%%!*}"
     [ -z "$method" ] && continue
-    echo "[$entry]=$method"
+    echo "[$entry]='$method'"
     "$method" "$entry"  ||
     {
       local -i err_code=$?
@@ -169,23 +184,23 @@ __chtoor-undo() #50
   [ "$(realpath -q -e "$NEW_ROOT")" = "/" ] && { echo >&2 "*** chtoor-undo: '$NEW_ROOT' -- is the current root mountpoint; return"; return 51; }
 
   ## undo setup for new root hierarchy
-  local method='' entry=''
+  local method='' entry_methods='' entry=''
   while IFS='' read -r entry; do
     [ -z "$entry" ] && continue
-    method="${SETUP[$entry]}"
+    entry_methods="${SETUP[$entry]}"
+    method="${entry_methods##*!}"
     [ -z "$method" ] && continue
-    echo "[$entry]=$method"
-    method="undo-$method"
-    if declare -F "$method" >/dev/null; then
-      "$method" "$entry"  ||
-      {
-        local -i err_code=$?
-        echo >&2 "*** chtoor-undo: $method error $err_code; abort"
-        return "$err_code";
-      }
-    else
-      echo >&2 "*** SETUP: '$method' -- unknown method; skipped"
+    if [ "$method" = "$entry_methods" ]; then
+      method="undo-$method"
+      declare -F "$method" >/dev/null || continue  # skip non-existing default corresponding undo method
     fi
+    echo "[$entry]='$method'"
+    "$method" "$entry"  ||
+    {
+      local -i err_code=$?
+      echo >&2 "*** chtoor-undo: $method error $err_code; abort"
+      return "$err_code";
+    }
   done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!SETUP[*]}")
 
   ##
@@ -196,7 +211,7 @@ __chtoor-undo() #50
   rm -v "$CHTOOR_DIR/$CHTOOR_MARKER"
 }
 
-__chtoor-undo
+
 exit
 
 
