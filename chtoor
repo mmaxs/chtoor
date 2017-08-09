@@ -49,25 +49,11 @@ declare -A SETUP=(  # some minimal defaults to setup the 'new_root' directory hi
 )
 
 
-__is-same() #10
-{
-  local LHS="$(realpath -q -e "$1")" RHS="$(realpath -q -e "$2")"
-  [ -n "$LHS" -a -n "$RHS" ]  &&
-  {
-    test "$LHS" = "$RHS"  ||
-    {
-      LHS="$(stat --printf="%d:%i" "$LHS")"
-      RHS="$(stat --printf="%d:%i" "$RHS")"
-      test "$LHS" = "$RHS"
-    }
-  }
-}
-
 __verify-setup-methods() #20
 {
-  local method='' entry_methods=''
-  for entry_methods in "${SETUP[@]}"; do
-    method="${entry_methods%%!*}"
+  local method='' item_methods=''
+  for item_methods in "${SETUP[@]}"; do
+    method="${item_methods%%!*}"
     [ -z "$method" ] && continue  # skip empty records
     declare -F "$method" >/dev/null && continue
     echo >&2 "*** SETUP: '$method' -- unknown setup method; exit"
@@ -77,11 +63,11 @@ __verify-setup-methods() #20
 }
 __verify-undo-methods() #20
 {
-  local method='' entry_methods=''
-  for entry_methods in "${SETUP[@]}"; do
-    method="${entry_methods##*!}"
+  local method='' item_methods=''
+  for item_methods in "${SETUP[@]}"; do
+    method="${item_methods##*!}"
     [ -z "$method" ] && continue  # skip empty records
-    [ "$method" = "$entry_methods" ] && continue  # no undo method is specified; no matter if the default corresponding undo method exists
+    [ "$method" = "$item_methods" ] && continue  # no undo method is specified; no matter if the default corresponding undo method exists
     declare -F "$method" >/dev/null && continue
     echo >&2 "*** SETUP: '$method' -- unknown undo method; exit"
     exit 21
@@ -99,7 +85,7 @@ case "$OPT_MODE" in
       ;;&
   (go | setup)
       if [ ! -f "$OPT_CONFIG_FILE" ]; then
-        echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- not found; fall back to minimal defaults"
+        echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- not found; fall back to minimal setup defaults"
       fi
       ;;&
   (go)
@@ -117,6 +103,122 @@ case "$OPT_MODE" in
       ;;
 esac
 
+
+__is-same() #10
+{
+  local LHS="$(realpath -q -e "$1")" RHS="$(realpath -q -e "$2")"
+  [ -n "$LHS" -a -n "$RHS" ]  &&
+  {
+    test "$LHS" = "$RHS"  ||
+    {
+      LHS="$(stat --printf="%d:%i" "$LHS")"
+      RHS="$(stat --printf="%d:%i" "$RHS")"
+      test "$LHS" = "$RHS"
+    }
+  }
+}
+
+__clone-path2()
+{
+  local Source="$1" CHROOT="$2" TARGET="$2/$1"
+  [ -n "$SOURCE" ] || return 1
+  [ -d "$CHROOT" ] || return 2
+  ! is-root "$CHROOT" || return 3
+  ! mountpoint -q "$TARGET" || return 4
+  ! is-same "$SOURCE" "$TARGET" || return 5
+
+  local src="" tgt="$CHROOT" pth=""
+  while IFC='' read -r -d '/' pth || [ "$pth" ]; do
+    [ -z "$pth" ] && continue;
+    [ "$pth" = "." ] && { src="${src:-.}"; continue; }
+    src="$src/$pth"
+    tgt="$tgt/$pth"
+    [ "$pth" = ".." ] && continue
+
+    if [ -e "$src" -a ! -d "$src" ]; then
+      echo >&2 "$0: '$tgt' -- $(stat --printf=%F "$src") in the path to '$TARGET'"
+      return 11
+    fi
+    if mountpoint -q "$tgt"; then
+      echo >&2 "$0: '$tgt' -- mount point in the path to '$TARGET'"
+      return 14
+    fi
+
+    sudo mkdir -v -p "$tgt" || return 10
+    sudo chown -v --reference="$src" "$tgt"
+    sudo chmod -v --reference="$src" "$tgt"
+    sudo chcon -v --reference="$src" "$tgt"
+  done < <(dirname "$SOURCE")
+}
+
+dupmnt()  #60
+{
+  local Source="$1" Target="$NEW_ROOT/$1"
+  local -i opt_ro=$(($2&1))
+
+  local src_type="$(stat --dereference --printf=%F "$Source")"
+  case "$src_type" in
+    (directory | regular\ file)
+        mountpoint -q "$Source"  ||
+        {
+          echo >&2 "*** dupmnt: '$Source' -- not a mountpoint; return"
+          return 61
+        }
+        mountpoint -q "$Target"  &&
+        {
+          echo >&2 "*** dupmnt: '$Target' -- is a mountpoint; return"
+          return 62
+        }
+        ;;&
+    (directory)
+        [ -d "$Target" ]  ||
+        if [ -e "$Target" ]; then
+          echo >&2 "*** dupmnt: '$Target' -- mismatched type: not a directory; return"
+          return 63
+        else
+          __clone-path-to "$Source"
+            sudo mkdir -v -p "$Target" && sudo chown -v "$USER:$USER" "$Target"
+          }  ||
+          {
+            return 63
+          }
+        fi
+        if sudo mount -v --bind "$SOURCE" "$TARGET"; then
+          [ "$opt_ro" -ne 0 ] && sudo mount -v -o remount,ro,bind "$SOURCE" "$TARGET"
+          if [ "$opt_recursive" -ne 0 ]; then
+            findmnt --raw --noheadings --output TARGET --submounts --uniq '/'  |
+            LC_ALL=C sort  |
+            while IFS='' read -r src; do
+              [ "$src" = "$SOURCE" ] && continue
+              [ "${src:0:${#SOURCE}}" = "$SOURCE" ] && __do-bind "$src" "$CHROOT" $opt_ro
+            done
+          fi
+        else
+          return 51
+        fi
+        ;;
+    (regular\ file)
+        if [ ! -f "$TARGET" ]; then
+          [ ! -e "$TARGET" ]  &&
+          {
+            sudo dd status=none if=/dev/null of="$TARGET"  &&
+            sudo chown -v "$USER:$USER" "$TARGET"
+          }  ||
+          return 42
+        fi
+        if sudo mount -v --bind "$SOURCE" "$TARGET"; then
+          [ "$opt_ro" -ne 0 ] && sudo mount -v -o remount,ro,bind "$SOURCE" "$TARGET"
+        else
+          return 52
+        fi
+        ;;
+    (*)
+        echo >&2 "*** dupmnt: '$Source' -- unsupported source type ($src_type); return"
+        return 60
+        ;;
+  esac
+  return 0
+}
 
 __print-bind-mounts()  # print a summary of the existing bind-mounts for NEW_ROOT
 {
@@ -143,14 +245,14 @@ __chtoor-setup() #30
   fi
 
   ## do setup the new root hierarchy
-  local method='' entry_methods='' entry=''
-  while IFS='' read -r entry; do
-    [ -z "$entry" ] && continue
-    entry_methods="${SETUP[$entry]}"
-    method="${entry_methods%%!*}"
+  local method='' item_methods='' item=''
+  while IFS='' read -r item; do
+    [ -z "$item" ] && continue
+    item_methods="${SETUP[$item]}"
+    method="${item_methods%%!*}"
     [ -z "$method" ] && continue
-    echo "[$entry]='$method'"
-    "$method" "$entry"  ||
+    echo "[$item]='$method'"
+    "$method" "$item"  ||
     {
       local -i err_code=$?
       echo >&2 "*** chtoor-setup: $method error $err_code; abort"
@@ -184,18 +286,18 @@ __chtoor-undo() #50
   [ "$(realpath -q -e "$NEW_ROOT")" = "/" ] && { echo >&2 "*** chtoor-undo: '$NEW_ROOT' -- is the current root mountpoint; return"; return 51; }
 
   ## undo setup for new root hierarchy
-  local method='' entry_methods='' entry=''
-  while IFS='' read -r entry; do
-    [ -z "$entry" ] && continue
-    entry_methods="${SETUP[$entry]}"
-    method="${entry_methods##*!}"
+  local method='' item_methods='' item=''
+  while IFS='' read -r item; do
+    [ -z "$item" ] && continue
+    item_methods="${SETUP[$item]}"
+    method="${item_methods##*!}"
     [ -z "$method" ] && continue
-    if [ "$method" = "$entry_methods" ]; then
+    if [ "$method" = "$item_methods" ]; then
       method="undo-$method"
       declare -F "$method" >/dev/null || continue  # skip non-existing default corresponding undo method
     fi
-    echo "[$entry]='$method'"
-    "$method" "$entry"  ||
+    echo "[$item]='$method'"
+    "$method" "$item"  ||
     {
       local -i err_code=$?
       echo >&2 "*** chtoor-undo: $method error $err_code; abort"
