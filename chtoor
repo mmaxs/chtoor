@@ -161,14 +161,13 @@ __replicate() #60
         if [ -e "$Target" ]; then
           [ -d "$Target" ]  ||
           {
-            echo >&2 "*** replicate: '$Target' -- already exist; mismatched type: not a directory; return"
+            echo >&2 "*** replicate: '$Target' -- already exist; mismatched type: directory required; return"
             return 68
           }
         else
-          __replicate-path "$Source" || return
-          sudo mkdir -v -p "$Target"  ||
+          sudo mkdir -v "$Target"  ||
           {
-            echo >&2 "*** replicate: '$Target' -- cannot create directory; abort"
+            echo >&2 "*** replicate: '$Target' -- cannot create directory; return"
             return 61
           }
         fi
@@ -177,14 +176,13 @@ __replicate() #60
         if [ -e "$Target" ]; then
           [ -f "$Target" ]  ||
           {
-            echo >&2 "*** replicate: '$Target' -- already exist; mismatched type: not a file; return"
+            echo >&2 "*** replicate: '$Target' -- already exist; mismatched type: file required; return"
             return 68
           }
         else
-          __replicate-path "$Source" || return
           sudo dd status=none if=/dev/null of="$Target"  ||
           {
-            echo >&2 "*** replicate: '$Target' -- cannot create file; abort"
+            echo >&2 "*** replicate: '$Target' -- cannot create file; return"
             return 61
           }
         fi
@@ -203,16 +201,15 @@ __replicate() #60
               local tgt_type="$(stat --printf=%F "$Target")"
               [ "$tgt_type" = "$deref_src_type" ]  ||
               {
-                echo >&2 "*** replicate: '$Target' -- already exist; mismatched type: not a $deref_src_type; return"
+                echo >&2 "*** replicate: '$Target' -- already exist; mismatched type: $deref_src_type required; return"
                 return 68
               }
             fi
           }
         else
-          __replicate-path "$Source" || return
           sudo cp -v -P --preserve=all -T "$Source" "$Target"  ||
           {
-            echo >&2 "*** replicate: '$Target' -- cannot copy symlink; abort"
+            echo >&2 "*** replicate: '$Target' -- cannot copy symlink; return"
             return 61
           }
         fi
@@ -230,39 +227,33 @@ dupmnt()  #60
   local Source="$1" Target="$NEW_ROOT/$1"
   local -i opt_ro=$(($2&1))
 
-  local src_type="$(stat --dereference --printf=%F "$Source")"
-  case "$src_type" in
+  mountpoint -q "$Source"  ||
+  {
+    echo >&2 "*** dupmnt: '$Source' -- not a mountpoint; return"
+    return 61
+  }
+
+  local deref_src_type="$(stat --dereference --printf=%F "$Source")"
+  case "$deref_src_type" in
     (directory | regular\ file)
-        mountpoint -q "$Source"  ||
-        {
-          echo >&2 "*** dupmnt: '$Source' -- not a mountpoint; return"
-          return 61
-        }
-        mountpoint -q "$Target"  &&
-        echo >&2 "*** dupmnt: '$Target' -- is a mountpoint; will be over-mounted"
+        if [ -e "$Target" ]; then
+          local deref_tgt_type="$(stat --dereference --printf=%F "$Target")"
+          [ "$deref_tgt_type" = "$deref_src_type" ]  ||
+          {
+            echo >&2 "*** dupmnt: '$Target' -- cannot bind mismatched type: $deref_src_type required; return"
+            return 62
+          }
+          mountpoint -q "$Target" && echo >&2 "*** dupmnt: '$Target' -- is a mountpoint; will be over-mounted"
+        else
+          __replicate-path-to "$Source"  &&
+          __replicate "$Source"  ||
+          {
+            echo >&2 "*** dupmnt: '$Target' -- cannot create mountpoint; abort"
+            return 63
+          }
+        fi
         ;;&
     (directory)
-        [ -d "$Target" ]  ||
-        if [ -e "$Target" ]; then
-          echo >&2 "*** dupmnt: '$Target' -- mismatched type: not a directory; return"
-          return 63
-        else
-          __replicate-path "$Source"  ||
-          {
-            echo >&2 "*** dupmnt: '$Target' -- cannot replicate path; abort"
-            return 64
-          }
-          sudo mkdir -v -p "$Target"  ||
-          {
-            echo >&2 "*** dupmnt: '$Target' -- cannot create directory; abort"
-            return 64
-          }
-          sudo chown -v --reference="$Source" "$Target"
-          sudo chmod -v --reference="$Source" "$Target"
-          sudo chcon -v --reference="$Source" "$Target"
-        fi
-
-
         if sudo mount -v --bind "$SOURCE" "$TARGET"; then
           [ "$opt_ro" -ne 0 ] && sudo mount -v -o remount,ro,bind "$SOURCE" "$TARGET"
           if [ "$opt_recursive" -ne 0 ]; then
@@ -276,37 +267,8 @@ dupmnt()  #60
         else
           return 51
         fi
-        ;;&
+        ;;
     (regular\ file)
-        [ -f "$Target" ]  ||
-        if [ -e "$Target" ]; then
-          echo >&2 "*** dupmnt: '$Target' -- mismatched type: not a file; return"
-          return 63
-        else
-          __replicate-path "$Source"  ||
-          {
-            echo >&2 "*** dupmnt: '$Target' -- cannot replicate path; abort"
-            return 64
-          }
-          sudo dd status=none if=/dev/null of="$Target"  ||
-          {
-            echo >&2 "*** dupmnt: '$Target' -- cannot create file; abort"
-            return 64
-          }
-          sudo chown -v --reference="$SOURCE" "$TARGET"
-          sudo chmod -v --reference="$SOURCE" "$TARGET"
-          sudo chcon -v --reference="$SOURCE" "$TARGET"
-        fi
-        ;;&
-
-        if [ ! -f "$TARGET" ]; then
-          [ ! -e "$TARGET" ]  &&
-          {
-            sudo dd status=none if=/dev/null of="$TARGET"  &&
-            sudo chown -v "$USER:$USER" "$TARGET"
-          }  ||
-          return 42
-        fi
         if sudo mount -v --bind "$SOURCE" "$TARGET"; then
           [ "$opt_ro" -ne 0 ] && sudo mount -v -o remount,ro,bind "$SOURCE" "$TARGET"
         else
@@ -314,7 +276,7 @@ dupmnt()  #60
         fi
         ;;
     (*)
-        echo >&2 "*** dupmnt: '$Source' -- unsupported source type ($src_type); return"
+        echo >&2 "*** dupmnt: '$Source' -- unsupported source type ($deref_src_type); return"
         return 60
         ;;
   esac
