@@ -118,7 +118,7 @@ __is-same() #10
   }
 }
 
-__clone-path2()
+__replicate-path() #70
 {
   local Source="$1" CHROOT="$2" TARGET="$2/$1"
   [ -n "$SOURCE" ] || return 1
@@ -150,6 +150,80 @@ __clone-path2()
     sudo chcon -v --reference="$src" "$tgt"
   done < <(dirname "$SOURCE")
 }
+__replicate() #60
+{
+  local Source="$1" Target="$NEW_ROOT/$1"
+  [ -z "$Source" ] && { echo >&2 "*** replicate: empty parameter; return"; return 60; }
+
+  local src_type="$(stat --printf=%F "$Source")"
+  case "$src_type" in
+    (directory)
+        if [ -e "$Target" ]; then
+          [ -d "$Target" ]  ||
+          {
+            echo >&2 "*** replicate: '$Target' -- already exist; mismatched type: not a directory; return"
+            return 68
+          }
+        else
+          __replicate-path "$Source" || return
+          sudo mkdir -v -p "$Target"  ||
+          {
+            echo >&2 "*** replicate: '$Target' -- cannot create directory; abort"
+            return 61
+          }
+        fi
+        ;;&
+    (regular\ file)
+        if [ -e "$Target" ]; then
+          [ -f "$Target" ]  ||
+          {
+            echo >&2 "*** replicate: '$Target' -- already exist; mismatched type: not a file; return"
+            return 68
+          }
+        else
+          __replicate-path "$Source" || return
+          sudo dd status=none if=/dev/null of="$Target"  ||
+          {
+            echo >&2 "*** replicate: '$Target' -- cannot create file; abort"
+            return 61
+          }
+        fi
+        ;;&
+    (directory | regular\ file)
+        sudo chown -v --reference="$Source" "$Target"
+        sudo chmod -v --reference="$Source" "$Target"
+        sudo chcon -v --reference="$Source" "$Target"
+        ;;
+    (symbolic\ link)
+        if [ -e "$Target" ]; then
+          [ -L "$Target" ]  ||
+          {
+            local deref_src_type="$(stat --dereference --printf=%F "$Source")"
+            if [ -n "$deref_src_type" ]; then
+              local tgt_type="$(stat --printf=%F "$Target")"
+              [ "$tgt_type" = "$deref_src_type" ]  ||
+              {
+                echo >&2 "*** replicate: '$Target' -- already exist; mismatched type: not a $deref_src_type; return"
+                return 68
+              }
+            fi
+          }
+        else
+          __replicate-path "$Source" || return
+          sudo cp -v -P --preserve=all -T "$Source" "$Target"  ||
+          {
+            echo >&2 "*** replicate: '$Target' -- cannot copy symlink; abort"
+            return 61
+          }
+        fi
+        ;;
+    (*)
+        echo >&2 "*** replicate: '$Source' -- unsupported source type ($src_type); return"
+        return 69
+        ;;
+  esac
+  return 0
+}
 
 dupmnt()  #60
 {
@@ -165,10 +239,7 @@ dupmnt()  #60
           return 61
         }
         mountpoint -q "$Target"  &&
-        {
-          echo >&2 "*** dupmnt: '$Target' -- is a mountpoint; return"
-          return 62
-        }
+        echo >&2 "*** dupmnt: '$Target' -- is a mountpoint; will be over-mounted"
         ;;&
     (directory)
         [ -d "$Target" ]  ||
@@ -176,13 +247,22 @@ dupmnt()  #60
           echo >&2 "*** dupmnt: '$Target' -- mismatched type: not a directory; return"
           return 63
         else
-          __clone-path-to "$Source"
-            sudo mkdir -v -p "$Target" && sudo chown -v "$USER:$USER" "$Target"
-          }  ||
+          __replicate-path "$Source"  ||
           {
-            return 63
+            echo >&2 "*** dupmnt: '$Target' -- cannot replicate path; abort"
+            return 64
           }
+          sudo mkdir -v -p "$Target"  ||
+          {
+            echo >&2 "*** dupmnt: '$Target' -- cannot create directory; abort"
+            return 64
+          }
+          sudo chown -v --reference="$Source" "$Target"
+          sudo chmod -v --reference="$Source" "$Target"
+          sudo chcon -v --reference="$Source" "$Target"
         fi
+
+
         if sudo mount -v --bind "$SOURCE" "$TARGET"; then
           [ "$opt_ro" -ne 0 ] && sudo mount -v -o remount,ro,bind "$SOURCE" "$TARGET"
           if [ "$opt_recursive" -ne 0 ]; then
@@ -196,8 +276,29 @@ dupmnt()  #60
         else
           return 51
         fi
-        ;;
+        ;;&
     (regular\ file)
+        [ -f "$Target" ]  ||
+        if [ -e "$Target" ]; then
+          echo >&2 "*** dupmnt: '$Target' -- mismatched type: not a file; return"
+          return 63
+        else
+          __replicate-path "$Source"  ||
+          {
+            echo >&2 "*** dupmnt: '$Target' -- cannot replicate path; abort"
+            return 64
+          }
+          sudo dd status=none if=/dev/null of="$Target"  ||
+          {
+            echo >&2 "*** dupmnt: '$Target' -- cannot create file; abort"
+            return 64
+          }
+          sudo chown -v --reference="$SOURCE" "$TARGET"
+          sudo chmod -v --reference="$SOURCE" "$TARGET"
+          sudo chcon -v --reference="$SOURCE" "$TARGET"
+        fi
+        ;;&
+
         if [ ! -f "$TARGET" ]; then
           [ ! -e "$TARGET" ]  &&
           {
