@@ -282,7 +282,7 @@ __replicate() #60
             return 62
           }
         fi
-        ;;
+        ;;&
     (regular\ file)
         if [ -e "$Target" ]; then
           [ -f "$Target" ]  ||
@@ -297,6 +297,11 @@ __replicate() #60
             return 62
           }
         fi
+        ;;&
+    (directory | regular\ file)
+        sudo chown -v --reference="$Source" "$Target"
+        sudo chmod -v --reference="$Source" "$Target"
+        sudo chcon -v --reference="$Source" "$Target"
         ;;
     (symbolic\ link\ /\ *)
         if [ -e "$Target" ]; then
@@ -317,6 +322,11 @@ __replicate() #60
             echo >&2 "*** replicate: '$Target' -- cannot copy symlink; abort"
             return 62
           }
+          if [ -e "$Target" ]; then
+            sudo chown -v --reference="$Source" "$Target"
+            sudo chmod -v --reference="$Source" "$Target"
+            sudo chcon -v --reference="$Source" "$Target"
+          fi
         fi
         ;;
     (*)
@@ -324,9 +334,6 @@ __replicate() #60
         return 69
         ;;
   esac
-  sudo chown -v --reference="$Source" "$Target"
-  sudo chmod -v --reference="$Source" "$Target"
-  sudo chcon -v --reference="$Source" "$Target"
 
   return 0
 }
