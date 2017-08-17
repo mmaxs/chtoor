@@ -118,22 +118,109 @@ __is-same() #10
   }
 }
 
-__replicate-path() #70
+__file-type()
 {
-  local Source="$1" CHROOT="$2" TARGET="$2/$1"
-  [ -n "$SOURCE" ] || return 1
-  [ -d "$CHROOT" ] || return 2
-  ! is-root "$CHROOT" || return 3
-  ! mountpoint -q "$TARGET" || return 4
-  ! is-same "$SOURCE" "$TARGET" || return 5
+  local t=""
+  while true; do
+    test -d "$1" && { t="directory"; break; }
+    test -f "$1" && { t="regular file"; break; }
+    test -b "$1" && { t="block special"; break; }
+    test -c "$1" && { t="character special"; break; }
+    test -p "$1" && { t="named pipe"; break; }
+    test -S "$1" && { t="socket"; break; }
+    break;
+  done
+  test -L "$1" && t="symbolic link / $t"
+  echo "$t"
+}
 
-  local src="" tgt="$CHROOT" pth=""
-  while IFC='' read -r -d '/' pth || [ "$pth" ]; do
-    [ -z "$pth" ] && continue;
-    [ "$pth" = "." ] && { src="${src:-.}"; continue; }
-    src="$src/$pth"
-    tgt="$tgt/$pth"
-    [ "$pth" = ".." ] && continue
+__replicate-component() #60
+{
+  local Source="$1" TargetBase="$2" Target="$2/$1"
+  [ -e "$Source" ] && { echo >&2 "*** replicate-component: Source='$Source' -- empty / non-existing argument; return"; return 60; }
+  [ -e "$TargetBase" ] && { echo >&2 "*** replicate-component: TargetBase='$TargetBase' -- empty / non-existing argument; return"; return 60; }
+
+  local src_type="$(__file-type "$Source")"
+  case "$src_type" in
+    (directory)
+        if [ -e "$Target" ]; then
+          [ -d "$Target" ]  ||
+          {
+            echo >&2 "*** replicate-component: '$Target' -- already exist; mismatched type: not a directory; return"
+            return 68
+          }
+        else
+          sudo mkdir -v "$Target"  ||
+          {
+            echo >&2 "*** replicate-component: '$Target' -- cannot create directory; return"
+            return 61
+          }
+        fi
+        ;;&
+    (regular\ file)
+        if [ -e "$Target" ]; then
+          [ -f "$Target" ]  ||
+          {
+            echo >&2 "*** replicate-component: '$Target' -- already exist; mismatched type: not a file; return"
+            return 68
+          }
+        else
+          sudo dd status=none if=/dev/null of="$Target"  ||
+          {
+            echo >&2 "*** replicate-component: '$Target' -- cannot create file; return"
+            return 61
+          }
+        fi
+        ;;&
+    (directory | regular\ file)
+        sudo chown -v --reference="$Source" "$Target"
+        sudo chmod -v --reference="$Source" "$Target"
+        sudo chcon -v --reference="$Source" "$Target"
+        ;;
+    (symbolic\ link\ *)
+        if [ -e "$Target" ]; then
+          local deref_src_type="${src_type##symbolyc link / }"
+          if [ -n "$deref_src_type" ]; then
+            local tgt_type="$(__file-type "$Target")"
+            local deref_tgt_type="${tgt_type##symbolic link / }"
+            if [ -n "$deref_tgt_type" ]; then
+              [ "$deref_tgt_type" = "$deref_src_type" ]  ||
+              {
+                echo >&2 "*** replicate-component: '$Target' -- already exist; mismatched type: not a $deref_src_type; return"
+                return 68
+              }
+            fi
+          fi
+        else
+          sudo cp -v -P --preserve=all -T "$Source" "$Target"  ||
+          {
+            echo >&2 "*** replicate-component: '$Target' -- cannot copy symlink; return"
+            return 61
+          }
+        fi
+        ;;
+    (*)
+        echo >&2 "*** replicate-component: '$Source' -- unsupported source type: $src_type; return"
+        return 69
+        ;;
+  esac
+  return 0
+}
+__replicate() #70
+{
+  local Source="$1" TargetBase="$2" Target="$2/$1"
+  [ -e "$Source" ] && { echo >&2 "*** replicate: Source='$Source' -- empty / non-existing argument; return"; return 70; }
+  [ -e "$TargetBase" ] && { echo >&2 "*** replicate: TargetBase='$TargetBase' -- empty / non-existing argument; return"; return 70; }
+
+  local src="" tgt="$TargetBase" C=""
+  while IFC='' read -r -d '/' C || [ "$C" ]; do
+    [ -z "$C" ] && continue;
+    [ "$C" = "." ] && { src="${src:-.}"; continue; }
+    src="$src/$C"
+    tgt="$tgt/$C"
+    [ "$C" = ".." ] && continue
+
+    __replicate-component "$src" "$TargetBase"
 
     if [ -e "$src" -a ! -d "$src" ]; then
       echo >&2 "$0: '$tgt' -- $(stat --printf=%F "$src") in the path to '$TARGET'"
@@ -148,88 +235,17 @@ __replicate-path() #70
     sudo chown -v --reference="$src" "$tgt"
     sudo chmod -v --reference="$src" "$tgt"
     sudo chcon -v --reference="$src" "$tgt"
-  done < <(dirname "$SOURCE")
-}
-__replicate() #60
-{
-  local Source="$1" Target="$NEW_ROOT/$1"
-  [ -z "$Source" ] && { echo >&2 "*** replicate: empty parameter; return"; return 60; }
-
-  local src_type="$(stat --printf=%F "$Source")"
-  case "$src_type" in
-    (directory)
-        if [ -e "$Target" ]; then
-          [ -d "$Target" ]  ||
-          {
-            echo >&2 "*** replicate: '$Target' -- already exist; mismatched type: directory required; return"
-            return 68
-          }
-        else
-          sudo mkdir -v "$Target"  ||
-          {
-            echo >&2 "*** replicate: '$Target' -- cannot create directory; return"
-            return 61
-          }
-        fi
-        ;;&
-    (regular\ file)
-        if [ -e "$Target" ]; then
-          [ -f "$Target" ]  ||
-          {
-            echo >&2 "*** replicate: '$Target' -- already exist; mismatched type: file required; return"
-            return 68
-          }
-        else
-          sudo dd status=none if=/dev/null of="$Target"  ||
-          {
-            echo >&2 "*** replicate: '$Target' -- cannot create file; return"
-            return 61
-          }
-        fi
-        ;;&
-    (directory | regular\ file)
-        sudo chown -v --reference="$Source" "$Target"
-        sudo chmod -v --reference="$Source" "$Target"
-        sudo chcon -v --reference="$Source" "$Target"
-        ;;
-    (symbolic\ link)
-        if [ -e "$Target" ]; then
-          [ -L "$Target" ]  ||
-          {
-            local deref_src_type="$(stat --dereference --printf=%F "$Source")"
-            if [ -n "$deref_src_type" ]; then
-              local tgt_type="$(stat --printf=%F "$Target")"
-              [ "$tgt_type" = "$deref_src_type" ]  ||
-              {
-                echo >&2 "*** replicate: '$Target' -- already exist; mismatched type: $deref_src_type required; return"
-                return 68
-              }
-            fi
-          }
-        else
-          sudo cp -v -P --preserve=all -T "$Source" "$Target"  ||
-          {
-            echo >&2 "*** replicate: '$Target' -- cannot copy symlink; return"
-            return 61
-          }
-        fi
-        ;;
-    (*)
-        echo >&2 "*** replicate: '$Source' -- unsupported source type ($src_type); return"
-        return 69
-        ;;
-  esac
-  return 0
+  done <<<"$Source"
 }
 
-dupmnt()  #60
+dupmount()  #60
 {
   local Source="$1" Target="$NEW_ROOT/$1"
   local -i opt_ro=$(($2&1))
 
   mountpoint -q "$Source"  ||
   {
-    echo >&2 "*** dupmnt: '$Source' -- not a mountpoint; return"
+    echo >&2 "*** dupmount: '$Source' -- not a mountpoint; return"
     return 61
   }
 
@@ -240,15 +256,15 @@ dupmnt()  #60
           local deref_tgt_type="$(stat --dereference --printf=%F "$Target")"
           [ "$deref_tgt_type" = "$deref_src_type" ]  ||
           {
-            echo >&2 "*** dupmnt: '$Target' -- cannot bind mismatched type: $deref_src_type required; return"
+            echo >&2 "*** dupmount: '$Target' -- cannot mount mismatched type: not a $deref_src_type; return"
             return 62
           }
-          mountpoint -q "$Target" && echo >&2 "*** dupmnt: '$Target' -- is a mountpoint; will be over-mounted"
+          mountpoint -q "$Target" && echo >&2 "*** dupmount: '$Target' -- is a mountpoint; will be over-mounted"
         else
           __replicate-path-to "$Source"  &&
           __replicate "$Source"  ||
           {
-            echo >&2 "*** dupmnt: '$Target' -- cannot create mountpoint; abort"
+            echo >&2 "*** dupmount: '$Target' -- cannot create mountpoint; abort"
             return 63
           }
         fi
@@ -276,7 +292,7 @@ dupmnt()  #60
         fi
         ;;
     (*)
-        echo >&2 "*** dupmnt: '$Source' -- unsupported source type ($deref_src_type); return"
+        echo >&2 "*** dupmount: '$Source' -- unsupported source type: $deref_src_type; return"
         return 60
         ;;
   esac
