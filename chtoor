@@ -208,11 +208,11 @@ __replicate-component() #60
 }
 __replicate() #70
 {
-  local Source="$1" TargetBase="$2" Target="$2/$1"
+  local Source="$1" NewRoot="$2" Target="$NewRoot/$Source"
   [ -e "$Source" ] && { echo >&2 "*** replicate: Source='$Source' -- empty / non-existing argument; return"; return 70; }
-  [ -e "$TargetBase" ] && { echo >&2 "*** replicate: TargetBase='$TargetBase' -- empty / non-existing argument; return"; return 70; }
+  [ -e "$NewRoot" ] && { echo >&2 "*** replicate: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 70; }
 
-  local src="" tgt="$TargetBase" C=""
+  local src="" tgt="$NewRoot" C=""
   while IFC='' read -r -d '/' C || [ "$C" ]; do
     [ -z "$C" ] && continue;
     [ "$C" = "." ] && { src="${src:-.}"; continue; }
@@ -220,22 +220,60 @@ __replicate() #70
     tgt="$tgt/$C"
     [ "$C" = ".." ] && continue
 
-    __replicate-component "$src" "$TargetBase"
-
-    if [ -e "$src" -a ! -d "$src" ]; then
-      echo >&2 "$0: '$tgt' -- $(stat --printf=%F "$src") in the path to '$TARGET'"
-      return 11
-    fi
-    if mountpoint -q "$tgt"; then
-      echo >&2 "$0: '$tgt' -- mount point in the path to '$TARGET'"
-      return 14
-    fi
-
-    sudo mkdir -v -p "$tgt" || return 10
-    sudo chown -v --reference="$src" "$tgt"
-    sudo chmod -v --reference="$src" "$tgt"
-    sudo chcon -v --reference="$src" "$tgt"
-  done <<<"$Source"
+    local src_type="$(__file-type "$src")"
+    case "$src_type" in
+      (directory)
+          if [ -e "$tgt" ]; then
+            [ -d "$tgt" ]  ||
+            {
+              echo >&2 "*** replicate: '$tgt' -- component already exists; mismatched type: not a directory; abort"
+              return 68
+            }
+          else
+            sudo mkdir -v "$tgt"  ||
+            {
+              echo >&2 "*** replicate: '$tgt' -- cannot create directory; abort"
+              return 61
+            }
+          fi
+          sudo chown -v --reference="$src" "$tgt"
+          sudo chmod -v --reference="$src" "$tgt"
+          sudo chcon -v --reference="$src" "$tgt"
+          ;;
+      (symbolic\ link\ /\ directory)
+          if [ -e "$tgt" ]; then
+            [ -d "$tgt" ]  ||
+            {
+              echo >&2 "*** replicate: '$tgt' -- component already exists; mismatched type: not a directory; abort"
+              return 68
+            }
+          else
+            sudo cp -v -P --preserve=all -T "$src" "$tgt"  ||
+            {
+              echo >&2 "*** replicate: '$tgt' -- cannot copy symlink; abort"
+              return 61
+            }
+            [ -d "$tgt" ]  ||
+            {
+              echo >&2 "*** replicate: '$tgt' -- component appears to be a dangling symlink; create a directory instead of symlink copying"
+              sudo rm "$tgt"
+              sudo mkdir -v "$tgt"  ||
+              {
+                echo >&2 "*** replicate: '$tgt' -- cannot create directory; abort"
+                return 61
+              }
+              sudo chown -v --reference="$src" "$tgt"
+              sudo chmod -v --reference="$src" "$tgt"
+              sudo chcon -v --reference="$src" "$tgt"
+            }
+          fi
+          ;;
+      (*)
+          echo >&2 "*** replicate: '$src' -- unexpected source component type: $src_type; abort"
+          return 69
+          ;;
+    esac
+  done < <$(dirname "$Source")
 }
 
 dupmount()  #60
