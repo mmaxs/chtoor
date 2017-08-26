@@ -245,7 +245,7 @@ __replicate() #60
             }
             [ -d "$tgt" ]  ||
             {
-              echo >&2 "*** replicate: '$tgt' -- component appears to be a dangling symlink; create a directory instead of symlink copying"
+              echo >&2 "*** replicate: '$tgt' -- component appears to be a dangling symlink; create directory instead of symlink copying"
               sudo rm "$tgt"
               sudo mkdir -v "$tgt"  ||
               {
@@ -481,7 +481,7 @@ __chtoor-undo() #50
       echo >&2 "*** chtoor-undo: $method error $err_code; abort"
       return "$err_code";
     }
-  done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!SETUP[*]}")
+  done < <(IFS=$'\n'; LC_ALL=C sort -r <<<"${!SETUP[*]}")
 
   ##
   [ -w "$NEW_ROOT" -a -f "$NEW_ROOT/$CHTOOR_MARKER" ] && rm -v "$NEW_ROOT/$CHTOOR_MARKER"
