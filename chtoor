@@ -1,5 +1,6 @@
 #! /bin/bash
 
+## DECLARATIONS
 
 declare USER="$(whoami)"  # set it to the effective user ID name
 declare CHTOOR_MARKER=".chtoor"  # the file name to visually denote the new root environment establishment
@@ -49,60 +50,7 @@ declare -A SETUP=(  # some minimal defaults to setup the 'new_root' directory hi
 )
 
 
-__verify-setup-methods() #20
-{
-  local method='' item_methods=''
-  for item_methods in "${SETUP[@]}"; do
-    method="${item_methods%%!*}"
-    [ -z "$method" ] && continue  # skip empty records
-    declare -F "$method" >/dev/null && continue
-    echo >&2 "*** SETUP: '$method' -- unknown setup method; exit"
-    exit 21
-  done
-  return 0
-}
-__verify-undo-methods() #20
-{
-  local method='' item_methods=''
-  for item_methods in "${SETUP[@]}"; do
-    method="${item_methods##*!}"
-    [ -z "$method" ] && continue  # skip empty records
-    [ "$method" = "$item_methods" ] && continue  # no undo method is specified; no matter if the default corresponding undo method exists
-    declare -F "$method" >/dev/null && continue
-    echo >&2 "*** SETUP: '$method' -- unknown undo method; exit"
-    exit 21
-  done
-  return 0
-}
-
-case "$OPT_MODE" in
-  (go | setup | undo)
-      ## read the config file
-      [ -z "$OPT_CONFIG_FILE" ] && OPT_CONFIG_FILE="$CHTOOR_DIR/chtoor.conf"
-      if [ -f "$OPT_CONFIG_FILE" ]; then
-        source "$OPT_CONFIG_FILE" || { echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- source failure; exit"; exit 4; }
-      fi
-      ;;&
-  (go | setup)
-      if [ ! -f "$OPT_CONFIG_FILE" ]; then
-        echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- not found; fall back to minimal setup defaults"
-      fi
-      ;;&
-  (go)
-      RUN="${2:-$RUN}"
-      [ -f "$CHTOOR_DIR/$CHTOOR_MARKER" ] || __verify-setup-methods
-      ;;
-  (setup)
-      __verify-setup-methods
-      ;;
-  (undo)
-      if [ ! -f "$OPT_CONFIG_FILE" ]; then
-        echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- not found; minimal default setup assumed"
-      fi
-      __verify-undo-methods
-      ;;
-esac
-
+## SUBROUTINES
 
 __is-same() #10
 {
@@ -136,9 +84,10 @@ __file-type()
 
 __replicate-component() #60
 {
-  local Source="$1" TargetBase="$2" Target="$2/$1"
-  [ -e "$Source" ] && { echo >&2 "*** replicate-component: Source='$Source' -- empty / non-existing argument; return"; return 60; }
-  [ -e "$TargetBase" ] && { echo >&2 "*** replicate-component: TargetBase='$TargetBase' -- empty / non-existing argument; return"; return 60; }
+  local Source="$1" TargetBase="$2"
+  local Target="$2/$1"
+  [ -e "$Source" ] || { echo >&2 "*** replicate-component: Source='$Source' -- empty / non-existing argument; return"; return 60; }
+  [ -e "$TargetBase" ] || { echo >&2 "*** replicate-component: TargetBase='$TargetBase' -- empty / non-existing argument; return"; return 60; }
 
   local src_type="$(__file-type "$Source")"
   case "$src_type" in
@@ -208,9 +157,10 @@ __replicate-component() #60
 }
 __replicate() #60
 {
-  local Source="$1" NewRoot="$2" Target="$NewRoot/$Source"
-  [ -e "$Source" ] && { echo >&2 "*** replicate: Source='$Source' -- empty / non-existing argument; return"; return 60; }
-  [ -e "$NewRoot" ] && { echo >&2 "*** replicate: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 60; }
+  local Source="$1" NewRoot="$2"
+  local Target="$NewRoot/$Source"
+  [ -e "$Source" ] || { echo >&2 "*** replicate: Source='$Source' -- empty / non-existing argument; return"; return 60; }
+  [ -e "$NewRoot" ] || { echo >&2 "*** replicate: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 60; }
 
   ## replicate path to Source
   local src="" src_type="" tgt="$NewRoot" C=""
@@ -263,7 +213,7 @@ __replicate() #60
     sudo chown -v --reference="$src" "$tgt"
     sudo chmod -v --reference="$src" "$tgt"
     sudo chcon -v --reference="$src" "$tgt"
-  done < <$(dirname "$Source")
+  done < <(dirname "$Source")
 
   ## replicate Source itself
   local src_type="$(__file-type "$Source")"
@@ -307,7 +257,8 @@ __replicate() #60
         if [ -e "$Target" ]; then
           local deref_src_type="${src_type##symbolyc link / }"
           if [ -n "$deref_src_type" ]; then
-            local tgt_type="$(__file-type "$Target")" deref_tgt_type="${tgt_type##symbolic link / }"
+            local tgt_type="$(__file-type "$Target")"
+            local deref_tgt_type="${tgt_type##symbolic link / }"
             if [ -n "$deref_tgt_type" ]; then
               [ "$deref_tgt_type" = "$deref_src_type" ]  ||
               {
@@ -340,8 +291,9 @@ __replicate() #60
 
 dupmount()  #70
 {
-  local Source="$1" NewRoot="$2" Target="$NewRoot/$Source"
-  local -i Opt_ro=$(($3&1))
+  local Source="$1" NewRoot="$2"
+  local Target="$NewRoot/$Source"
+  local -i Opt_ro=$((${3:-0}&1)) Opt_recursive=$((${3:-0}&2))
 
   mountpoint -q "$Source"  ||
   {
@@ -349,11 +301,13 @@ dupmount()  #70
     return 71
   }
 
-  local src_type="$(__file-type "$Source")" deref_src_type="${src_type##symbolic link / }"
+  local src_type="$(__file-type "$Source")"
+  local deref_src_type="${src_type##symbolic link / }"
   case "$deref_src_type" in
     (directory | regular\ file)
         if [ -e "$Target" ]; then
-          local tgt_type="$(__file-type "$Target")" deref_tgt_type="${tgt_type##symbolic link / }"
+          local tgt_type="$(__file-type "$Target")"
+          local deref_tgt_type="${tgt_type##symbolic link / }"
           [ "$deref_tgt_type" = "$deref_src_type" ]  ||
           {
             echo >&2 "*** dupmount: '$Target' -- cannot mount mismatched type: not a $deref_src_type; return"
@@ -367,29 +321,39 @@ dupmount()  #70
             return 73
           }
         fi
-        ;;&
-    (directory)
-        if sudo mount -v --bind "$SOURCE" "$TARGET"; then
-          [ "$opt_ro" -ne 0 ] && sudo mount -v -o remount,ro,bind "$SOURCE" "$TARGET"
-          if [ "$opt_recursive" -ne 0 ]; then
-            findmnt --raw --noheadings --output TARGET --submounts --uniq '/'  |
-            LC_ALL=C sort  |
-            while IFS='' read -r src; do
-              [ "$src" = "$SOURCE" ] && continue
-              [ "${src:0:${#SOURCE}}" = "$SOURCE" ] && __do-bind "$src" "$CHROOT" $opt_ro
-            done
-          fi
-        else
-          return 51
-        fi
+        local -A M
+        eval M=("$(findmnt --pairs --output FSTYPE,OPTIONS,SOURCE --uniq "$Source" | sed -e 's/\(^\|\s\)\([^=]\+\)=/\1[\2]=/g')")
+        declare -p M
+        #
+        #gawk -v T="$Target" -e 'END {
+        #    if (match($0, /\[(\/.*)\]$/, M))
+        #      printf "mount --bind \47%s\47 \47%s\47", M[1], T
+        #    else
+        #      printf "mount -t %s -o %s \47%s\47 \47%s\47", $1, $2, $3, T
+        #}'
         ;;
-    (regular\ file)
-        if sudo mount -v --bind "$SOURCE" "$TARGET"; then
-          [ "$opt_ro" -ne 0 ] && sudo mount -v -o remount,ro,bind "$SOURCE" "$TARGET"
-        else
-          return 52
-        fi
-        ;;
+#    (directory)
+#        if sudo mount -v --bind "$SOURCE" "$TARGET"; then
+#          [ "$opt_ro" -ne 0 ] && sudo mount -v -o remount,ro,bind "$SOURCE" "$TARGET"
+#          if [ "$opt_recursive" -ne 0 ]; then
+#            findmnt --raw --noheadings --output TARGET --submounts --uniq '/'  |
+#            LC_ALL=C sort  |
+#            while IFS='' read -r src; do
+#              [ "$src" = "$SOURCE" ] && continue
+#              [ "${src:0:${#SOURCE}}" = "$SOURCE" ] && __do-bind "$src" "$CHROOT" $opt_ro
+#            done
+#          fi
+#        else
+#          return 51
+#        fi
+#        ;;
+#    (regular\ file)
+#        if sudo mount -v --bind "$SOURCE" "$TARGET"; then
+#          [ "$opt_ro" -ne 0 ] && sudo mount -v -o remount,ro,bind "$SOURCE" "$TARGET"
+#        else
+#          return 52
+#        fi
+#        ;;
     (*)
         echo >&2 "*** dupmount: '$Source' -- unexpected source type: $deref_src_type; return"
         return 60
@@ -398,22 +362,23 @@ dupmount()  #70
   return 0
 }
 
-__print-bind-mounts()  # print a summary of the existing bind-mounts for NEW_ROOT
+__print-NEW_ROOT-mounts()  # print a summary of the existing bind-mounts for NEW_ROOT
 {
   findmnt --list --output TARGET,SOURCE,PROPAGATION,FSTYPE,OPTIONS  |
   gawk -v P="$(realpath -q -e "$NEW_ROOT")" -e 'NR==1 {print; next}; index($0, P) {print | "LC_ALL=C sort"}'
+  echo "--"
 }
 
 __chtoor-setup() #30
 {
-  ## create the setup establishment marker file
+  ## create a setup establishment marker file
   dd status=none if=/dev/null of="$CHTOOR_DIR/$CHTOOR_MARKER"  ||
   {
     echo >&2 "*** chtoor-setup: '$CHTOOR_DIR/$CHTOOR_MARKER' -- cannot create file; return"
     return 31
   }
 
-  ## create the new root directory
+  ## create a new root directory
   if [ -e "$NEW_ROOT" ]; then
     [ -d "$NEW_ROOT" ] || { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- not a directory; return"; return 32; }
     mountpoint -q "$NEW_ROOT" && { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- is a mountpoint; return"; return 32; }
@@ -430,22 +395,21 @@ __chtoor-setup() #30
     method="${item_methods%%!*}"
     [ -z "$method" ] && continue
     echo "[$item]='$method'"
-    "$method" "$item"  ||
+    "$method" "$item" "$NEW_ROOT" ||
     {
       local -i err_code=$?
       echo >&2 "*** chtoor-setup: $method error $err_code; abort"
       return "$err_code";
     }
   done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!SETUP[*]}")
+  __print-NEW_ROOT-mounts
 
   ## create a marker file to visually distiguish the new root hierarchy
-  if [ ! __is-same "$NEW_ROOT" "/" -a -w "$NEW_ROOT" ]; then
+  if ! __is-same "$NEW_ROOT" "/" && [ -w "$NEW_ROOT" ]; then
     sudo dd status=none if=/dev/null of="$NEW_ROOT/$CHTOOR_MARKER"  &&
     sudo chown "$USER:$USER" "$NEW_ROOT/$CHTOOR_MARKER"
   fi
 
-  ##
-  __print-bind-mounts
   return 0
 }
 
@@ -482,15 +446,72 @@ __chtoor-undo() #50
       return "$err_code";
     }
   done < <(IFS=$'\n'; LC_ALL=C sort -r <<<"${!SETUP[*]}")
+  __print-NEW_ROOT-mounts
 
-  ##
+  ## remove marker files
   [ -w "$NEW_ROOT" -a -f "$NEW_ROOT/$CHTOOR_MARKER" ] && rm -v "$NEW_ROOT/$CHTOOR_MARKER"
-  __print-bind-mounts
-
-  ## remove the setup establishment marker file
   rm -v "$CHTOOR_DIR/$CHTOOR_MARKER"
+
+  return 0
 }
 
+
+## MAIN
+
+__verify-setup-methods() #20
+{
+  local method='' item_methods=''
+  for item_methods in "${SETUP[@]}"; do
+    method="${item_methods%%!*}"
+    [ -z "$method" ] && continue  # skip empty records
+    declare -F "$method" >/dev/null && continue
+    echo >&2 "*** SETUP: '$method' -- unknown setup method; exit"
+    exit 21
+  done
+  return 0
+}
+__verify-undo-methods() #20
+{
+  local method='' item_methods=''
+  for item_methods in "${SETUP[@]}"; do
+    method="${item_methods##*!}"
+    [ -z "$method" ] && continue  # skip empty records
+    [ "$method" = "$item_methods" ] && continue  # no undo method is specified; no matter if the default corresponding undo method exists
+    declare -F "$method" >/dev/null && continue
+    echo >&2 "*** SETUP: '$method' -- unknown undo method; exit"
+    exit 21
+  done
+  return 0
+}
+
+case "$OPT_MODE" in
+  (go | setup | undo)
+      ## read the config file
+      [ -z "$OPT_CONFIG_FILE" ] && OPT_CONFIG_FILE="$CHTOOR_DIR/chtoor.conf"
+      if [ -f "$OPT_CONFIG_FILE" ]; then
+        source "$OPT_CONFIG_FILE" || { echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- source failure; exit"; exit 4; }
+      fi
+      ;;&
+  (go | setup)
+      if [ ! -f "$OPT_CONFIG_FILE" ]; then
+        echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- not found; fall back to minimal setup defaults"
+      fi
+      ;;&
+  (go)
+      RUN="${2:-$RUN}"
+      [ -f "$CHTOOR_DIR/$CHTOOR_MARKER" ] || __verify-setup-methods
+      ;;
+  (setup)
+      __verify-setup-methods
+      ;;
+  (undo)
+      if [ ! -f "$OPT_CONFIG_FILE" ]; then
+        echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- not found; minimal default setup assumed"
+      fi
+      __verify-undo-methods
+      ;;
+esac
+__chtoor-"$OPT_MODE"
 
 exit
 
