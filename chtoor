@@ -330,23 +330,21 @@ __dupmount()  #70
         if [ "$mp_src" != "${mp_info[SOURCE]}" ]; then
           ## bind mount
           mp_src="${mp_info[SOURCE]:${#mp_src}+1:-1}"
-          if sudo mount -v --bind "$mp_src" "$Target"; then
-            sudo mount -v --make-slave "$Target"
-            [ "$Opt_ro" -ne 0 ] && sudo mount -o remount,ro,bind "$mp_src" "$Target"
-            if [ "$Opt_recursive" -ne 0 ]; then
-              findmnt --raw --noheadings --output TARGET --submounts --uniq "$Source"  |
-              LC_ALL=C sort  |
-              while IFS='' read -r mp_src; do
-                [ "$mp_src" = "$mp_tgt" ] && continue
-                mp_src="${mp_src:${#mp_tgt}}"
-                __dupmount "$Source/$mp_src" "$NewRoot" "$Opt_ro"
-              done
-            fi
-          else
-            return 77
-          fi
+          sudo mount -v --bind "$mp_src" "$Target" || return 77
+          sudo mount -v --make-slave "$Target"
+          [ "$Opt_ro" -ne 0 ] && sudo mount -o remount,ro,bind "$mp_src" "$Target"
         else
-          :
+          sudo mount -v -t "${mp_info[FSTYPE]}" -o "${mp_info[OPTIONS]}" "$mp_src" "$Target" || return 77
+          [ "$Opt_ro" -ne 0 ] && sudo mount -o remount,ro "$mp_src" "$Target"
+        fi
+        if [ "$Opt_recursive" -ne 0 ]; then
+          findmnt --raw --noheadings --output TARGET --submounts --uniq "$Source"  |
+          LC_ALL=C sort  |
+          while IFS='' read -r mp_src; do
+            [ "$mp_src" = "$mp_tgt" ] && continue
+            mp_src="${mp_src:${#mp_tgt}}"
+            __dupmount "$Source/$mp_src" "$NewRoot" "$Opt_ro"
+          done
         fi
         ;;
 #    (directory)
