@@ -13,7 +13,7 @@ declare CHTOOR_MARKER=".chtoor"  # the file name to visually denote the new root
 
 declare OPT_MODE="go"
 declare OPT_CONFIG_FILE=""
-while getopts "f:gsu" OPT; do
+while getopts "f:GSU" OPT; do
   case "$OPT" in
     f)  OPT_CONFIG_FILE="$OPTARG"
         if [ ! -f "$OPT_CONFIG_FILE" ]; then
@@ -21,11 +21,11 @@ while getopts "f:gsu" OPT; do
           exit 1
         fi
         ;;
-    g)  OPT_MODE="go"
+    G)  OPT_MODE="go"
         ;;
-    s)  OPT_MODE="setup"
+    S)  OPT_MODE="setup"
         ;;
-    u)  OPT_MODE="undo"
+    U)  OPT_MODE="undo"
         ;;
    \?)  exit 1
         ;;
@@ -289,7 +289,10 @@ __replicate() #60
   return 0
 }
 
-dupmount()  #70
+
+## METHODS
+
+__dupmount()  #70
 {
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
@@ -321,16 +324,30 @@ dupmount()  #70
             return 73
           }
         fi
-        local -A M
-        eval M=("$(findmnt --pairs --output FSTYPE,OPTIONS,SOURCE --uniq "$Source" | sed -e 's/\(^\|\s\)\([^=]\+\)=/\1[\2]=/g')")
-        declare -p M
-        #
-        #gawk -v T="$Target" -e 'END {
-        #    if (match($0, /\[(\/.*)\]$/, M))
-        #      printf "mount --bind \47%s\47 \47%s\47", M[1], T
-        #    else
-        #      printf "mount -t %s -o %s \47%s\47 \47%s\47", $1, $2, $3, T
-        #}'
+        local -A mp_info
+        eval mp_info=("$(findmnt --pairs --output FSTYPE,OPTIONS,SOURCE,TARGET --uniq "$Source" | sed -e 's/\(^\|\s\)\([^=]\+\)=/\1[\2]=/g')")
+        local mp_src="${mp_info[SOURCE]%%\[/*\]}" mp_tgt="${mp_info[TARGET]}"
+        if [ "$mp_src" != "${mp_info[SOURCE]}" ]; then
+          ## bind mount
+          mp_src="${mp_info[SOURCE]:${#mp_src}+1:-1}"
+          if sudo mount -v --bind "$mp_src" "$Target"; then
+            sudo mount -v --make-slave "$Target"
+            [ "$Opt_ro" -ne 0 ] && sudo mount -o remount,ro,bind "$mp_src" "$Target"
+            if [ "$Opt_recursive" -ne 0 ]; then
+              findmnt --raw --noheadings --output TARGET --submounts --uniq "$Source"  |
+              LC_ALL=C sort  |
+              while IFS='' read -r mp_src; do
+                [ "$mp_src" = "$mp_tgt" ] && continue
+                mp_src="${mp_src:${#mp_tgt}}"
+                __dupmount "$Source/$mp_src" "$NewRoot" "$Opt_ro"
+              done
+            fi
+          else
+            return 77
+          fi
+        else
+          :
+        fi
         ;;
 #    (directory)
 #        if sudo mount -v --bind "$SOURCE" "$TARGET"; then
@@ -356,16 +373,28 @@ dupmount()  #70
 #        ;;
     (*)
         echo >&2 "*** dupmount: '$Source' -- unexpected source type: $deref_src_type; return"
-        return 60
+        return 70
         ;;
   esac
   return 0
 }
+dupmount()      { __dupmount "$1" "$NEW_ROOT" 0; }
+dupmount-ro()   { __dupmount "$1" "$NEW_ROOT" 1; }
+rdupmount()     { __dupmount "$1" "$NEW_ROOT" 2; }
+rdupmount-ro()  { __dupmount "$1" "$NEW_ROOT" 3; }
 
-__print-NEW_ROOT-mounts()  # print a summary of the existing bind-mounts for NEW_ROOT
+
+__print-NEW_ROOT-mounts()  # print a summary of the existing bind-mounts for NEW_ROOT hierarchy
 {
-  findmnt --list --output TARGET,SOURCE,PROPAGATION,FSTYPE,OPTIONS  |
-  gawk -v P="$(realpath -q -e "$NEW_ROOT")" -e 'NR==1 {print; next}; index($0, P) {print | "LC_ALL=C sort"}'
+  #findmnt --list --output TARGET,SOURCE,PROPAGATION,FSTYPE,OPTIONS  |
+  #gawk -v P="$(realpath -q -e "$NEW_ROOT")" -e 'NR==1 {print; next}; index($0, P) {print | "LC_ALL=C sort"}'
+  local tgt=''
+  echo
+  echo "-- '$NEW_ROOT' mounts:"
+  findmnt --raw --noheadings --output TARGET | grep -F "$(realpath -q -e "$NEW_ROOT")" | LC_ALL=C sort  |
+  while IFC='' read -r tgt || [ "$tgt" ]; do
+    findmnt --pairs --output TARGET,SOURCE,PROPAGATION,FSTYPE,OPTIONS "$tgt" | sed -b -e 's/" /"\n\t/g'
+  done
   echo "--"
 }
 
@@ -395,7 +424,7 @@ __chtoor-setup() #30
     method="${item_methods%%!*}"
     [ -z "$method" ] && continue
     echo "[$item]='$method'"
-    "$method" "$item" "$NEW_ROOT" ||
+    "$method" "$item"  ||
     {
       local -i err_code=$?
       echo >&2 "*** chtoor-setup: $method error $err_code; abort"
