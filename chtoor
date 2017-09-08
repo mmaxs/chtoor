@@ -330,26 +330,29 @@ __dupmount()  #70
         if [ "$mp_src" != "${mp_info[SOURCE]}" ]; then
           ## bind mount
           mp_src="${mp_info[SOURCE]:${#mp_src}+1:-1}"
+          echo "mount --bind '$mp_src' '$Target'"
           sudo mount -v --bind "$mp_src" "$Target" || return 77
+          echo "mount --make-slave '$Target'"
           sudo mount -v --make-slave "$Target"
           if [ "$Opt_ro" -ne 0 ]; then
-            sudo mount -o remount,ro,bind "$mp_src" "$Target" || return 78
+            echo "mount -o remount,ro,bind '$mp_src' '$Target'"
+            sudo mount -v -o remount,ro,bind "$mp_src" "$Target" || return 78
           fi
         else
+          echo "mount -t '${mp_info[FSTYPE]}' -o '${mp_info[OPTIONS]}' '$mp_src' '$Target'"
           sudo mount -v -t "${mp_info[FSTYPE]}" -o "${mp_info[OPTIONS]}" "$mp_src" "$Target" || return 77
           if [ "$Opt_ro" -ne 0 ]; then
-            sudo mount -o remount,ro "$mp_src" "$Target" || return 78
+            echo "mount -o remount,ro '$Target'"
+            sudo mount -v -o remount,ro "$Target" || return 78
           fi
         fi
         if [ "$Opt_recursive" -ne 0 ]; then
-          findmnt --raw --noheadings --output TARGET --submounts --uniq "$Source"  |
-          LC_ALL=C sort  |
           while IFS='' read -r mp_src; do
             [ "$mp_src" = "$mp_tgt" ] && continue
             mp_src="${mp_src:${#mp_tgt}}"
             echo "    -- [$Source/$mp_src]"
-            __dupmount "$Source/$mp_src" "$NewRoot" "$Opt_ro"
-          done
+            __dupmount "$Source/$mp_src" "$NewRoot" "$Opt_ro" || return 79
+          done < <(findmnt --raw --noheadings --output TARGET --submounts --uniq "$Source" | LC_ALL=C sort)
         fi
         ;;
 #    (directory)
@@ -398,7 +401,8 @@ __undo-dupmount()  #70
     return 0
   }
 
-  sudo umount -R "$Target"
+  echo "umount -R '$Target'"
+  sudo umount -v -R "$Target"
 }
 undo-dupmount()      { __undo-dupmount "$1" "$NEW_ROOT" 0; }
 undo-dupmount-ro()   { __undo-dupmount "$1" "$NEW_ROOT" 1; }
@@ -452,7 +456,7 @@ __chtoor-setup() #30
     {
       local -i err_code=$?
       echo >&2 "*** chtoor-setup: $method error $err_code; abort"
-      echo >&2 "*** chtoor-setup: WARN: there can be several mounts having been done so far"
+      echo >&2 "*** chtoor-setup: there can be several mounts having been done so far"
       __print-NEW_ROOT-mounts
       return "$err_code";
     }
@@ -499,14 +503,17 @@ __chtoor-undo() #50
     {
       local -i err_code=$?
       echo >&2 "*** chtoor-undo: $method error $err_code; abort"
-      echo >&2 "*** chtoor-undo: WARN: some mounts can still remain undone"
+      echo >&2 "*** chtoor-undo: some mounts can still remain undone"
       __print-NEW_ROOT-mounts
       return "$err_code";
     }
   done < <(IFS=$'\n'; LC_ALL=C sort -r <<<"${!SETUP[*]}")
 
-  mountpoint -q "$NEW_ROOT" && sudo umount -R "$NEW_ROOT"
   echo
+  if mountpoint -q "$NEW_ROOT"; then
+    echo "umount -R '$NEW_ROOT'"
+    sudo umount -v -R "$NEW_ROOT"
+  fi
   __print-NEW_ROOT-mounts
 
   ## remove marker files
