@@ -50,7 +50,7 @@ declare -A SETUP=(  # some minimal defaults to setup the 'new_root' directory hi
 )
 
 
-## SUBROUTINES
+## SUBROUTINES -- GENERAL
 
 __is-same() #10
 {
@@ -290,7 +290,7 @@ __replicate() #60
 }
 
 
-## METHODS
+## SUBROUTINES -- SETUP METHODS
 
 __dupmount()  #70
 {
@@ -332,10 +332,14 @@ __dupmount()  #70
           mp_src="${mp_info[SOURCE]:${#mp_src}+1:-1}"
           sudo mount -v --bind "$mp_src" "$Target" || return 77
           sudo mount -v --make-slave "$Target"
-          [ "$Opt_ro" -ne 0 ] && sudo mount -o remount,ro,bind "$mp_src" "$Target"
+          if [ "$Opt_ro" -ne 0 ]; then
+            sudo mount -o remount,ro,bind "$mp_src" "$Target" || return 78
+          fi
         else
           sudo mount -v -t "${mp_info[FSTYPE]}" -o "${mp_info[OPTIONS]}" "$mp_src" "$Target" || return 77
-          [ "$Opt_ro" -ne 0 ] && sudo mount -o remount,ro "$mp_src" "$Target"
+          if [ "$Opt_ro" -ne 0 ]; then
+            sudo mount -o remount,ro "$mp_src" "$Target" || return 78
+          fi
         fi
         if [ "$Opt_recursive" -ne 0 ]; then
           findmnt --raw --noheadings --output TARGET --submounts --uniq "$Source"  |
@@ -343,6 +347,7 @@ __dupmount()  #70
           while IFS='' read -r mp_src; do
             [ "$mp_src" = "$mp_tgt" ] && continue
             mp_src="${mp_src:${#mp_tgt}}"
+            echo "    -- [$Source/$mp_src]"
             __dupmount "$Source/$mp_src" "$NewRoot" "$Opt_ro"
           done
         fi
@@ -381,20 +386,41 @@ dupmount-ro()   { __dupmount "$1" "$NEW_ROOT" 1; }
 rdupmount()     { __dupmount "$1" "$NEW_ROOT" 2; }
 rdupmount-ro()  { __dupmount "$1" "$NEW_ROOT" 3; }
 
+__undo-dupmount()  #70
+{
+  local Source="$1" NewRoot="$2"
+  local Target="$NewRoot/$Source"
+  local -i Opt_ro=$((${3:-0}&1)) Opt_recursive=$((${3:-0}&2))
+
+  mountpoint -q "$Target"  ||
+  {
+    echo >&2 "*** undo-dupmount: '$Target' -- not a mountpoint; skipped"
+    return 0
+  }
+
+  sudo umount -R "$Target"
+}
+undo-dupmount()      { __undo-dupmount "$1" "$NEW_ROOT" 0; }
+undo-dupmount-ro()   { __undo-dupmount "$1" "$NEW_ROOT" 1; }
+undo-rdupmount()     { __undo-dupmount "$1" "$NEW_ROOT" 2; }
+undo-rdupmount-ro()  { __undo-dupmount "$1" "$NEW_ROOT" 3; }
+
+
+## SUBROUTINES -- CHTOOR COMMANDS
 
 __print-NEW_ROOT-mounts()  # print a summary of the existing bind-mounts for NEW_ROOT hierarchy
 {
   #findmnt --list --output TARGET,SOURCE,PROPAGATION,FSTYPE,OPTIONS  |
   #gawk -v P="$(realpath -q -e "$NEW_ROOT")" -e 'NR==1 {print; next}; index($0, P) {print | "LC_ALL=C sort"}'
   local tgt=''
-  echo
   echo "-- '$NEW_ROOT' mounts:"
   findmnt --raw --noheadings --output TARGET | grep -F "$(realpath -q -e "$NEW_ROOT")" | LC_ALL=C sort  |
   while IFC='' read -r tgt || [ "$tgt" ]; do
-    findmnt --pairs --output TARGET,SOURCE,PROPAGATION,FSTYPE,OPTIONS "$tgt" | sed -b -e 's/" /"\n\t/g'
+    findmnt --pairs --output TARGET,SOURCE,PROPAGATION,FSTYPE,OPTIONS "$tgt" | sed -b -e 's/" /"\n        /g'
   done
   echo "--"
 }
+
 
 __chtoor-setup() #30
 {
@@ -421,14 +447,17 @@ __chtoor-setup() #30
     item_methods="${SETUP[$item]}"
     method="${item_methods%%!*}"
     [ -z "$method" ] && continue
-    echo "[$item]='$method'"
+    echo "-- [$item]='$method'"
     "$method" "$item"  ||
     {
       local -i err_code=$?
       echo >&2 "*** chtoor-setup: $method error $err_code; abort"
+      echo >&2 "*** chtoor-setup: WARN: there can be several mounts having been done so far"
+      __print-NEW_ROOT-mounts
       return "$err_code";
     }
   done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!SETUP[*]}")
+  echo
   __print-NEW_ROOT-mounts
 
   ## create a marker file to visually distiguish the new root hierarchy
@@ -445,7 +474,7 @@ __chtoor-go() #40
   [ -f "$CHTOOR_DIR/$CHTOOR_MARKER" ]  ||
   __chtoor-setup  &&
   {
-    sudo chroot -- "$NEW_ROOT" su "$USER" "$RUN"
+    sudo chroot -- "$NEW_ROOT" su -- "$USER" "$RUN"
   }
 }
 
@@ -465,14 +494,17 @@ __chtoor-undo() #50
       method="undo-$method"
       declare -F "$method" >/dev/null || continue  # skip non-existing default corresponding undo method
     fi
-    echo "[$item]='$method'"
+    echo "-- [$item]='$method'"
     "$method" "$item"  ||
     {
       local -i err_code=$?
       echo >&2 "*** chtoor-undo: $method error $err_code; abort"
+      echo >&2 "*** chtoor-undo: WARN: some mounts can still remain undone"
+      __print-NEW_ROOT-mounts
       return "$err_code";
     }
   done < <(IFS=$'\n'; LC_ALL=C sort -r <<<"${!SETUP[*]}")
+  echo
   __print-NEW_ROOT-mounts
 
   ## remove marker files
