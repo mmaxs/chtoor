@@ -504,6 +504,8 @@ __chtoor-undo() #50
       return "$err_code";
     }
   done < <(IFS=$'\n'; LC_ALL=C sort -r <<<"${!SETUP[*]}")
+
+  mountpoint -q "$NEW_ROOT" && sudo umount -R "$NEW_ROOT"
   echo
   __print-NEW_ROOT-mounts
 
