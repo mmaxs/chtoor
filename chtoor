@@ -155,26 +155,42 @@ __replicate-component() #60
   esac
   return 0
 }
-__replicate() #60
+__replicate-file-mode-bits() #60
+{
+  local Source="$1" Target="$2"
+  [ -e "$Source" ] || { echo >&2 "*** replicate file mode bits: Source='$Source' -- empty / non-existing argument; return"; return 60; }
+  [ -e "$Target" ] || { echo >&2 "*** replicate file mode bits: Target='$Target' -- empty / non-existing argument; return"; return 60; }
+
+  return 0
+}
+__replicate-file-ownerships()
+{
+  return 0
+}
+__replicate-file-selinux-context()
+{
+  return 0
+}
+__replicate-pathname() #60
 {
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
-  [ -e "$Source" ] || { echo >&2 "*** replicate: Source='$Source' -- empty / non-existing argument; return"; return 60; }
-  [ -e "$NewRoot" ] || { echo >&2 "*** replicate: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 60; }
+  [ -e "$Source" ] || { echo >&2 "*** replicate path/name: Source='$Source' -- empty / non-existing argument; return"; return 60; }
+  [ -e "$NewRoot" ] || { echo >&2 "*** replicate path/name: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 60; }
 
   ## replicate path to Source
   local src="" src_type="" tgt="$NewRoot" C=""
   while IFC='' read -r -d '/' C || [ "$C" ]; do
-    [ -z "$C" ] && continue;
-    [ "$C" = "." ] && { src="${src:-.}"; continue; }
+    [ -z "$C" ] && continue;  # skip empty component (on sequences of slashes)
+    [ "$C" = "." ] && { src="${src:-.}"; continue; }  # remove a single dot - the alias for a current directory
     src="$src/$C"
     tgt="$tgt/$C"
-    [ "$C" = ".." ] && continue
+    [ "$C" = ".." ] && continue  # continue on two dots - the alias for a parent directory
 
     if [ -e "$tgt" ]; then
       [ -d "$tgt" ]  ||
       {
-        echo >&2 "*** replicate: '$tgt' -- component already exists; mismatched type: not a directory; abort"
+        echo >&2 "*** replicate path/name: '$tgt' -- path component already exists; mismatched type: not a directory; abort"
         return 68
       }
     else
@@ -183,29 +199,29 @@ __replicate() #60
         (directory)
             sudo mkdir -v "$tgt"  ||
             {
-              echo >&2 "*** replicate: '$tgt' -- cannot create directory; abort"
+              echo >&2 "*** replicate path/name: '$tgt' -- cannot create directory; abort"
               return 61
             }
             ;;
         (symbolic\ link\ /\ directory)
             sudo cp -v -P --preserve=all -T "$src" "$tgt"  ||
             {
-              echo >&2 "*** replicate: '$tgt' -- cannot copy symlink; abort"
+              echo >&2 "*** replicate path/name: '$tgt' -- cannot copy symlink; abort"
               return 61
             }
             [ -d "$tgt" ]  ||
             {
-              echo >&2 "*** replicate: '$tgt' -- component appears to be a dangling symlink; create directory instead of symlink copying"
+              echo >&2 "*** replicate path/name: '$tgt' -- path component appears to be a dangling symlink; create directory instead of symlink copying"
               sudo rm "$tgt"
               sudo mkdir -v "$tgt"  ||
               {
-                echo >&2 "*** replicate: '$tgt' -- cannot create directory; abort"
+                echo >&2 "*** replicate path/name: '$tgt' -- cannot create directory; abort"
                 return 61
               }
             }
             ;;
         (*)
-            echo >&2 "*** replicate: '$src' -- unexpected component type: $src_type; abort"
+            echo >&2 "*** replicate path/name: '$src' -- unexpected path component type: $src_type; abort"
             return 69
             ;;
       esac
@@ -222,13 +238,13 @@ __replicate() #60
         if [ -e "$Target" ]; then
           [ -d "$Target" ]  ||
           {
-            echo >&2 "*** replicate: '$Target' -- target already exists; mismatched type: not a directory; abort"
+            echo >&2 "*** replicate path/name: '$Target' -- target already exists; mismatched type: not a directory; abort"
             return 66
           }
         else
           sudo mkdir -v "$Target"  ||
           {
-            echo >&2 "*** replicate: '$Target' -- cannot create directory; abort"
+            echo >&2 "*** replicate path/name: '$Target' -- cannot create directory; abort"
             return 62
           }
         fi
@@ -237,13 +253,13 @@ __replicate() #60
         if [ -e "$Target" ]; then
           [ -f "$Target" ]  ||
           {
-            echo >&2 "*** replicate: '$Target' -- target already exists; mismatched type: not a file; abort"
+            echo >&2 "*** replicate path/name: '$Target' -- target already exists; mismatched type: not a file; abort"
             return 66
           }
         else
           sudo dd status=none if=/dev/null of="$Target"  ||
           {
-            echo >&2 "*** replicate: '$Target' -- cannot create file; abort"
+            echo >&2 "*** replicate path/name: '$Target' -- cannot create file; abort"
             return 62
           }
         fi
@@ -262,7 +278,7 @@ __replicate() #60
             if [ -n "$deref_tgt_type" ]; then
               [ "$deref_tgt_type" = "$deref_src_type" ]  ||
               {
-                echo >&2 "*** replicate: '$Target' -- target already exists; mismatched type: not a $deref_src_type; abort"
+                echo >&2 "*** replicate path/name: '$Target' -- target already exists; mismatched type: not a $deref_src_type; abort"
                 return 66
               }
             fi
@@ -270,7 +286,7 @@ __replicate() #60
         else
           sudo cp -v -P --preserve=all -T "$Source" "$Target"  ||
           {
-            echo >&2 "*** replicate: '$Target' -- cannot copy symlink; abort"
+            echo >&2 "*** replicate path/name: '$Target' -- cannot copy symlink; abort"
             return 62
           }
           if [ -e "$Target" ]; then
@@ -281,7 +297,7 @@ __replicate() #60
         fi
         ;;
     (*)
-        echo >&2 "*** replicate: '$Source' -- unsupported source type: $src_type; abort"
+        echo >&2 "*** replicate path/name: '$Source' -- unsupported source type: $src_type; abort"
         return 69
         ;;
   esac
@@ -318,7 +334,7 @@ __dupmount()  #70
           }
           mountpoint -q "$Target" && echo >&2 "*** dupmount: '$Target' -- is a mountpoint; will be over-mounted"
         else
-          __replicate "$Source" "$NewRoot"  ||
+          __replicate-pathname "$Source" "$NewRoot"  ||
           {
             echo >&2 "*** dupmount: '$Target' -- cannot create mountpoint; abort"
             return 73
@@ -329,7 +345,7 @@ __dupmount()  #70
         local mp_src="${mp_info[SOURCE]%%\[/*\]}" mp_tgt="${mp_info[TARGET]}"
         if [ "$mp_src" != "${mp_info[SOURCE]}" ]; then
           ## bind mount
-          mp_src="${mp_info[SOURCE]:${#mp_src}+1:-1}"
+          mp_src="${mp_info[SOURCE]:${#mp_src}+1:-1}"  # extract bind mount source
           echo "mount --bind '$mp_src' '$Target'"
           sudo mount -v --bind "$mp_src" "$Target" || return 77
           echo "mount --make-slave '$Target'"
