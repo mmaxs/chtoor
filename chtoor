@@ -122,8 +122,8 @@ __replicate-component() #60
         fi
         ;;&
     (directory | regular\ file)
-        sudo chown -v --reference="$Source" "$Target"
         sudo chmod -v --reference="$Source" "$Target"
+        sudo chown -v --reference="$Source" "$Target"
         sudo chcon -v --reference="$Source" "$Target"
         ;;
     (symbolic\ link\ *)
@@ -210,8 +210,8 @@ __replicate() #60
             ;;
       esac
     fi
-    sudo chown -v --reference="$src" "$tgt"
     sudo chmod -v --reference="$src" "$tgt"
+    sudo chown -v --reference="$src" "$tgt"
     sudo chcon -v --reference="$src" "$tgt"
   done < <(dirname "$Source")
 
@@ -249,8 +249,8 @@ __replicate() #60
         fi
         ;;&
     (directory | regular\ file)
-        sudo chown -v --reference="$Source" "$Target"
         sudo chmod -v --reference="$Source" "$Target"
+        sudo chown -v --reference="$Source" "$Target"
         sudo chcon -v --reference="$Source" "$Target"
         ;;
     (symbolic\ link\ /\ *)
@@ -274,8 +274,8 @@ __replicate() #60
             return 62
           }
           if [ -e "$Target" ]; then
-            sudo chown -v --reference="$Source" "$Target"
             sudo chmod -v --reference="$Source" "$Target"
+            sudo chown -v --reference="$Source" "$Target"
             sudo chcon -v --reference="$Source" "$Target"
           fi
         fi
@@ -350,7 +350,7 @@ __dupmount()  #70
           while IFS='' read -r mp_src; do
             [ "$mp_src" = "$mp_tgt" ] && continue
             mp_src="${mp_src:${#mp_tgt}}"
-            echo "    -- [$Source/$mp_src]"
+            echo "--- dupmount: [$Source/$mp_src]"
             __dupmount "$Source/$mp_src" "$NewRoot" "$Opt_ro" || return 79
           done < <(findmnt --raw --noheadings --output TARGET --submounts --uniq "$Source" | LC_ALL=C sort)
         fi
@@ -417,12 +417,12 @@ __print-NEW_ROOT-mounts()  # print a summary of the existing bind-mounts for NEW
   #findmnt --list --output TARGET,SOURCE,PROPAGATION,FSTYPE,OPTIONS  |
   #gawk -v P="$(realpath -q -e "$NEW_ROOT")" -e 'NR==1 {print; next}; index($0, P) {print | "LC_ALL=C sort"}'
   local tgt=''
-  echo "-- '$NEW_ROOT' mounts:"
+  echo "---${*:+ $*} '$NEW_ROOT' mounts:"
   findmnt --raw --noheadings --output TARGET | grep -F "$(realpath -q -e "$NEW_ROOT")" | LC_ALL=C sort  |
   while IFC='' read -r tgt || [ "$tgt" ]; do
     findmnt --pairs --output TARGET,SOURCE,PROPAGATION,FSTYPE,OPTIONS "$tgt" | sed -b -e 's/" /"\n        /g'
   done
-  echo "--"
+  echo "---"
 }
 
 
@@ -436,7 +436,7 @@ __chtoor-setup() #30
   }
 
   ## create a new root directory
-  if [ -e "$NEW_ROOT" ]; then
+  if [ -e "$NEW_ROOT" ]; then  # NEW_ROOT should be a simple directory
     [ -d "$NEW_ROOT" ] || { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- not a directory; return"; return 32; }
     mountpoint -q "$NEW_ROOT" && { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- is a mountpoint; return"; return 32; }
     __is-same "$NEW_ROOT" "/" && { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- is the current root; return"; return 32; }
@@ -451,18 +451,18 @@ __chtoor-setup() #30
     item_methods="${SETUP[$item]}"
     method="${item_methods%%!*}"
     [ -z "$method" ] && continue
-    echo "-- [$item]='$method'"
+    echo "--- chtoor-setup: [$item]='$method'"
     "$method" "$item"  ||
     {
       local -i err_code=$?
       echo >&2 "*** chtoor-setup: $method error $err_code; abort"
       echo >&2 "*** chtoor-setup: there can be several mounts having been done so far"
-      __print-NEW_ROOT-mounts
+      __print-NEW_ROOT-mounts "chtoor-setup:"
       return "$err_code";
     }
   done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!SETUP[*]}")
   echo
-  __print-NEW_ROOT-mounts
+  __print-NEW_ROOT-mounts "chtoor-setup:"
 
   ## create a marker file to visually distiguish the new root hierarchy
   if ! __is-same "$NEW_ROOT" "/" && [ -w "$NEW_ROOT" ]; then
@@ -498,23 +498,23 @@ __chtoor-undo() #50
       method="undo-$method"
       declare -F "$method" >/dev/null || continue  # skip non-existing default corresponding undo method
     fi
-    echo "-- [$item]='$method'"
+    echo "--- chtoor-undo: [$item]='$method'"
     "$method" "$item"  ||
     {
       local -i err_code=$?
       echo >&2 "*** chtoor-undo: $method error $err_code; abort"
       echo >&2 "*** chtoor-undo: some mounts can still remain undone"
-      __print-NEW_ROOT-mounts
+      __print-NEW_ROOT-mounts "chtoor-undo:"
       return "$err_code";
     }
   done < <(IFS=$'\n'; LC_ALL=C sort -r <<<"${!SETUP[*]}")
 
   echo
-  if mountpoint -q "$NEW_ROOT"; then
+  if mountpoint -q "$NEW_ROOT"; then  # NEW_ROOT should be a simple directory
     echo "umount -R '$NEW_ROOT'"
     sudo umount -v -R "$NEW_ROOT"
   fi
-  __print-NEW_ROOT-mounts
+  __print-NEW_ROOT-mounts "chtoor-undo:"
 
   ## remove marker files
   [ -w "$NEW_ROOT" -a -f "$NEW_ROOT/$CHTOOR_MARKER" ] && rm -v "$NEW_ROOT/$CHTOOR_MARKER"
@@ -723,8 +723,8 @@ __clone_target_path()
     fi
 
     sudo mkdir -v -p "$tgt" || return 10
-    sudo chown -v --reference="$src" "$tgt"
     sudo chmod -v --reference="$src" "$tgt"
+    sudo chown -v --reference="$src" "$tgt"
     sudo chcon -v --reference="$src" "$tgt"
   done < <(dirname "$SOURCE")
 }
@@ -743,15 +743,15 @@ __create()
     (directory)
         __clone_target_path "$SOURCE" "$CHROOT" || return
         sudo mkdir -v -p "$TARGET" || return 41
-        sudo chown -v --reference="$SOURCE" "$TARGET"
         sudo chmod -v --reference="$SOURCE" "$TARGET"
+        sudo chown -v --reference="$SOURCE" "$TARGET"
         sudo chcon -v --reference="$SOURCE" "$TARGET"
         ;;
     (regular\ file)
         __clone_target_path "$SOURCE" "$CHROOT" || return
         sudo dd status=none if=/dev/null of="$TARGET" || return 42;
-        sudo chown -v --reference="$SOURCE" "$TARGET"
         sudo chmod -v --reference="$SOURCE" "$TARGET"
+        sudo chown -v --reference="$SOURCE" "$TARGET"
         sudo chcon -v --reference="$SOURCE" "$TARGET"
         ;;
     (symbolic\ link)
