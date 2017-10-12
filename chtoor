@@ -155,12 +155,39 @@ __replicate-component() #60
   esac
   return 0
 }
-__replicate-file-mode-bits() #60
+__replicate-file-permissions() #60
 {
   local Source="$1" Target="$2"
-  [ -e "$Source" ] || { echo >&2 "*** replicate file mode bits: Source='$Source' -- empty / non-existing argument; return"; return 60; }
-  [ -e "$Target" ] || { echo >&2 "*** replicate file mode bits: Target='$Target' -- empty / non-existing argument; return"; return 60; }
+  [ -e "$Source" ] || { echo >&2 "*** replicate-file-permissions: Source='$Source' -- empty / non-existing argument; return"; return 60; }
+  [ -e "$Target" ] || { echo >&2 "*** replicate-file-permissions: Target='$Target' -- empty / non-existing argument; return"; return 60; }
 
+  echo 'stat --format=%#05a "$Source"'
+  local src_perms="$(stat --format=%#05a "$Source")"
+  [ $? -eq 0  -a  -n "$src_perms" ]  ||
+  {
+    echo 'sudo stat --format=%#05a "$Source"'
+    src_perms="$(sudo stat --format=%#05a "$Source")"
+    [ $? -eq 0  -a  -n "$src_perms" ]  ||
+    {
+      echo >&2 "*** replicate-file-permissions: '$Source' -- cannot stat source permissions; return"
+      return 61;
+    }
+  }
+  local tgt_perms="$(stat --format=%#05a "$Target")"
+  [ $? -eq 0  -a  -n "$tgt_perms" ]  ||
+  {
+    tgt_perms="$(sudo stat --format=%#05a "$Target")"
+  }
+
+  if [ "$src_perms" != "$tgt_perms" ]; then
+    echo 'chmod -v --reference="$Source" "$Target"'
+    chmod -v --reference="$Source" "$Target"  ||
+    sudo chmod -v --reference="$Source" "$Target"  ||
+    {
+      echo >&2 "*** replicate-file-permissions: '$Target' -- failed to change target permissions; return"
+      return 62;
+    }
+  fi
   return 0
 }
 __replicate-file-ownerships()
@@ -175,8 +202,8 @@ __replicate-pathname() #60
 {
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
-  [ -e "$Source" ] || { echo >&2 "*** replicate path/name: Source='$Source' -- empty / non-existing argument; return"; return 60; }
-  [ -e "$NewRoot" ] || { echo >&2 "*** replicate path/name: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 60; }
+  [ -e "$Source" ] || { echo >&2 "*** replicate-pathname: Source='$Source' -- empty / non-existing argument; return"; return 60; }
+  [ -e "$NewRoot" ] || { echo >&2 "*** replicate-pathname: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 60; }
 
   ## replicate path to Source
   local src="" src_type="" tgt="$NewRoot" C=""
@@ -190,7 +217,7 @@ __replicate-pathname() #60
     if [ -e "$tgt" ]; then
       [ -d "$tgt" ]  ||
       {
-        echo >&2 "*** replicate path/name: '$tgt' -- path component already exists; mismatched type: not a directory; abort"
+        echo >&2 "*** replicate-pathname: '$tgt' -- path component already exists; mismatched type: not a directory; abort"
         return 68
       }
     else
@@ -199,34 +226,34 @@ __replicate-pathname() #60
         (directory)
             sudo mkdir -v "$tgt"  ||
             {
-              echo >&2 "*** replicate path/name: '$tgt' -- cannot create directory; abort"
+              echo >&2 "*** replicate-pathname: '$tgt' -- cannot create directory; abort"
               return 61
             }
             ;;
         (symbolic\ link\ /\ directory)
             sudo cp -v -P --preserve=all -T "$src" "$tgt"  ||
             {
-              echo >&2 "*** replicate path/name: '$tgt' -- cannot copy symlink; abort"
+              echo >&2 "*** replicate-pathname: '$tgt' -- cannot copy symlink; abort"
               return 61
             }
             [ -d "$tgt" ]  ||
             {
-              echo >&2 "*** replicate path/name: '$tgt' -- path component appears to be a dangling symlink; create directory instead of symlink copying"
+              echo >&2 "*** replicate-pathname: '$tgt' -- path component appears to be a dangling symlink; create directory instead of symlink copying"
               sudo rm "$tgt"
               sudo mkdir -v "$tgt"  ||
               {
-                echo >&2 "*** replicate path/name: '$tgt' -- cannot create directory; abort"
+                echo >&2 "*** replicate-pathname: '$tgt' -- cannot create directory; abort"
                 return 61
               }
             }
             ;;
         (*)
-            echo >&2 "*** replicate path/name: '$src' -- unexpected path component type: $src_type; abort"
+            echo >&2 "*** replicate-pathname: '$src' -- unexpected path component type: $src_type; abort"
             return 69
             ;;
       esac
     fi
-    sudo chmod -v --reference="$src" "$tgt"
+    __replicate-file-permissions "$src" "$tgt"  # sudo chmod -v --reference="$src" "$tgt"
     sudo chown -v --reference="$src" "$tgt"
     sudo chcon -v --reference="$src" "$tgt"
   done < <(dirname "$Source")
@@ -238,13 +265,13 @@ __replicate-pathname() #60
         if [ -e "$Target" ]; then
           [ -d "$Target" ]  ||
           {
-            echo >&2 "*** replicate path/name: '$Target' -- target already exists; mismatched type: not a directory; abort"
+            echo >&2 "*** replicate-pathname: '$Target' -- target already exists; mismatched type: not a directory; abort"
             return 66
           }
         else
           sudo mkdir -v "$Target"  ||
           {
-            echo >&2 "*** replicate path/name: '$Target' -- cannot create directory; abort"
+            echo >&2 "*** replicate-pathname: '$Target' -- cannot create directory; abort"
             return 62
           }
         fi
@@ -253,19 +280,19 @@ __replicate-pathname() #60
         if [ -e "$Target" ]; then
           [ -f "$Target" ]  ||
           {
-            echo >&2 "*** replicate path/name: '$Target' -- target already exists; mismatched type: not a file; abort"
+            echo >&2 "*** replicate-pathname: '$Target' -- target already exists; mismatched type: not a file; abort"
             return 66
           }
         else
           sudo dd status=none if=/dev/null of="$Target"  ||
           {
-            echo >&2 "*** replicate path/name: '$Target' -- cannot create file; abort"
+            echo >&2 "*** replicate-pathname: '$Target' -- cannot create file; abort"
             return 62
           }
         fi
         ;;&
     (directory | regular\ file)
-        sudo chmod -v --reference="$Source" "$Target"
+        __replicate-file-permissions "$Source" "$Target"  # sudo chmod -v --reference="$Source" "$Target"
         sudo chown -v --reference="$Source" "$Target"
         sudo chcon -v --reference="$Source" "$Target"
         ;;
@@ -278,7 +305,7 @@ __replicate-pathname() #60
             if [ -n "$deref_tgt_type" ]; then
               [ "$deref_tgt_type" = "$deref_src_type" ]  ||
               {
-                echo >&2 "*** replicate path/name: '$Target' -- target already exists; mismatched type: not a $deref_src_type; abort"
+                echo >&2 "*** replicate-pathname: '$Target' -- target already exists; mismatched type: not a $deref_src_type; abort"
                 return 66
               }
             fi
@@ -286,18 +313,18 @@ __replicate-pathname() #60
         else
           sudo cp -v -P --preserve=all -T "$Source" "$Target"  ||
           {
-            echo >&2 "*** replicate path/name: '$Target' -- cannot copy symlink; abort"
+            echo >&2 "*** replicate-pathname: '$Target' -- cannot copy symlink; abort"
             return 62
           }
           if [ -e "$Target" ]; then
-            sudo chmod -v --reference="$Source" "$Target"
+            __replicate-file-permissions "$Source" "$Target"  # sudo chmod -v --reference="$Source" "$Target"
             sudo chown -v --reference="$Source" "$Target"
             sudo chcon -v --reference="$Source" "$Target"
           fi
         fi
         ;;
     (*)
-        echo >&2 "*** replicate path/name: '$Source' -- unsupported source type: $src_type; abort"
+        echo >&2 "*** replicate-pathname: '$Source' -- unsupported source type: $src_type; abort"
         return 69
         ;;
   esac
