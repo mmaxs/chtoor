@@ -315,7 +315,7 @@ __dupmount()  #70
 {
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
-  local -i Opt_ro=$((${3:-0}&1)) Opt_recursive=$((${3:-0}&2))
+  local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
 
   mountpoint -q "$Source"  ||
   {
@@ -353,25 +353,32 @@ __dupmount()  #70
           sudo mount -v --bind "$mp_src" "$Target" || return 77
           echo "mount --make-slave '$Target'"
           sudo mount -v --make-slave "$Target"
-          if [ "$Opt_ro" -ne 0 ]; then
-            echo "mount -o remount,ro,bind '$mp_src' '$Target'"
-            sudo mount -v -o remount,ro,bind "$mp_src" "$Target" || return 78
-          fi
         else
           echo "mount -t '${mp_info[FSTYPE]}' -o '${mp_info[OPTIONS]}' '$mp_src' '$Target'"
           sudo mount -v -t "${mp_info[FSTYPE]}" -o "${mp_info[OPTIONS]}" "$mp_src" "$Target" || return 77
-          if [ "$Opt_ro" -ne 0 ]; then
+        fi
+        if [ "$OptRecursive" -ne 0 ]; then
+          echo ">>> {recurstion{"
+          local sub_mp='' sub_mp0='' sub_tgt=''
+          while IFS='' read -r sub_mp; do
+            echo ">>> sub_mp='$sub_mp'"
+            [ "$sub_mp" = "$mp_tgt" ] && continue
+            [ "$sub_mp" = "${sub_mp0##$sub_mp}" ] && continue
+            sub_tgt="${sub_mp:${#mp_tgt}}"
+            echo "--- dupmount: [$Source/$sub_tgt]"
+            __dupmount "$Source/$sub_tgt" "$NewRoot" "$((2|$OptRO))"
+            sub_mp0="$sub_mp"
+          done < <(findmnt --raw --noheadings --output TARGET --submounts --uniq "$Source" | LC_ALL=C sort)
+          echo ">>> }recurstion}"
+        fi
+        if [ "$OptRO" -ne 0 ]; then
+          if [ "$mp_src" != "${mp_info[SOURCE]}" ]; then
+            echo "mount -o remount,ro,bind '$mp_src' '$Target'"
+            sudo mount -v -o remount,ro,bind "$mp_src" "$Target" || return 78
+          else
             echo "mount -o remount,ro '$Target'"
             sudo mount -v -o remount,ro "$Target" || return 78
           fi
-        fi
-        if [ "$Opt_recursive" -ne 0 ]; then
-          while IFS='' read -r mp_src; do
-            [ "$mp_src" = "$mp_tgt" ] && continue
-            mp_src="${mp_src:${#mp_tgt}}"
-            echo "--- dupmount: [$Source/$mp_src]"
-            __dupmount "$Source/$mp_src" "$NewRoot" "$Opt_ro" || return 79
-          done < <(findmnt --raw --noheadings --output TARGET --submounts --uniq "$Source" | LC_ALL=C sort)
         fi
         ;;
 #    (directory)
