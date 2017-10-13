@@ -52,7 +52,7 @@ declare -A SETUP=(  # some minimal defaults to setup the 'new_root' directory hi
 
 ## SUBROUTINES -- GENERAL
 
-__is-same() #10
+__is-same-file() #10
 {
   local LHS="$(realpath -q -e "$1")" RHS="$(realpath -q -e "$2")"
   [ -n "$LHS" -a -n "$RHS" ]  &&
@@ -155,49 +155,25 @@ __replicate-component() #60
   esac
   return 0
 }
-__replicate-file-permissions() #60
-{
-  local Source="$1" Target="$2"
-  [ -e "$Source" ] || { echo >&2 "*** replicate-file-permissions: Source='$Source' -- empty / non-existing argument; return"; return 60; }
-  [ -e "$Target" ] || { echo >&2 "*** replicate-file-permissions: Target='$Target' -- empty / non-existing argument; return"; return 60; }
 
-  echo 'stat --format=%#05a "$Source"'
-  local src_perms="$(stat --format=%#05a "$Source")"
-  [ $? -eq 0  -a  -n "$src_perms" ]  ||
-  {
-    echo 'sudo stat --format=%#05a "$Source"'
-    src_perms="$(sudo stat --format=%#05a "$Source")"
-    [ $? -eq 0  -a  -n "$src_perms" ]  ||
-    {
-      echo >&2 "*** replicate-file-permissions: '$Source' -- cannot stat source permissions; return"
-      return 61;
-    }
-  }
-  local tgt_perms="$(stat --format=%#05a "$Target")"
-  [ $? -eq 0  -a  -n "$tgt_perms" ]  ||
-  {
-    tgt_perms="$(sudo stat --format=%#05a "$Target")"
-  }
+__replicate-file-attributes()
+{
+  local Source="$1" Target="$2" StatFormat="$3" ChAttrCmd="$4"
+  [ -e "$Source" ] || { echo >&2 "*** replicate-file-attributes: Source='$Source' -- empty / non-existing argument; return"; return 1; }
+  [ -e "$Target" ] || { echo >&2 "*** replicate-file-attributes: Target='$Target' -- empty / non-existing argument; return"; return 1; }
+  [ -n "$StatFormat" ] || { echo >&2 "*** replicate-file-attributes: empty StatFormat argument; return"; return 1; }
+  [ -n "$ChAttrCmd" ] || { echo >&2 "*** replicate-file-attributes: empty ChAttrCmd argument; return"; return 1; }
 
-  if [ "$src_perms" != "$tgt_perms" ]; then
-    echo 'chmod -v --reference="$Source" "$Target"'
-    chmod -v --reference="$Source" "$Target"  ||
-    sudo chmod -v --reference="$Source" "$Target"  ||
-    {
-      echo >&2 "*** replicate-file-permissions: '$Target' -- failed to change target permissions; return"
-      return 62;
-    }
-  fi
-  return 0
+  local src_attrs="$(sudo stat --format="$StatFormat" "$Source" 2>/dev/null)"
+  local tgt_attrs="$(sudo stat --format="$StatFormat" "$Target" 2>/dev/null)"
+
+  [ "${src_attrs:-$Source}" != "${tgt_attrs:-$Target}" ]  &&
+  sudo $ChAttrCmd -v --reference="$Source" "$Target"
 }
-__replicate-file-ownerships()
-{
-  return 0
-}
-__replicate-file-selinux-context()
-{
-  return 0
-}
+__replicate-file-permissions()  { __replicate-file-attributes "$1" "$2" "%#05a" chmod; }
+__replicate-file-ownerships()  { __replicate-file-attributes "$1" "$2" "%U:%G" chown; }
+__replicate-file-selinux-context()  { __replicate-file-attributes "$1" "$2" "%C" chcon; }
+
 __replicate-pathname() #60
 {
   local Source="$1" NewRoot="$2"
@@ -254,8 +230,8 @@ __replicate-pathname() #60
       esac
     fi
     __replicate-file-permissions "$src" "$tgt"  # sudo chmod -v --reference="$src" "$tgt"
-    sudo chown -v --reference="$src" "$tgt"
-    sudo chcon -v --reference="$src" "$tgt"
+    __replicate-file-ownerships "$src" "$tgt"  # sudo chown -v --reference="$src" "$tgt"
+    __replicate-file-selinux-context "$src" "$tgt"  # sudo chcon -v --reference="$src" "$tgt"
   done < <(dirname "$Source")
 
   ## replicate Source itself
@@ -293,8 +269,8 @@ __replicate-pathname() #60
         ;;&
     (directory | regular\ file)
         __replicate-file-permissions "$Source" "$Target"  # sudo chmod -v --reference="$Source" "$Target"
-        sudo chown -v --reference="$Source" "$Target"
-        sudo chcon -v --reference="$Source" "$Target"
+        __replicate-file-ownerships "$Source" "$Target"  # sudo chown -v --reference="$Source" "$Target"
+        __replicate-file-selinux-context "$Source" "$Target"  # sudo chcon -v --reference="$Source" "$Target"
         ;;
     (symbolic\ link\ /\ *)
         if [ -e "$Target" ]; then
@@ -318,8 +294,8 @@ __replicate-pathname() #60
           }
           if [ -e "$Target" ]; then
             __replicate-file-permissions "$Source" "$Target"  # sudo chmod -v --reference="$Source" "$Target"
-            sudo chown -v --reference="$Source" "$Target"
-            sudo chcon -v --reference="$Source" "$Target"
+            __replicate-file-ownerships "$Source" "$Target"  # sudo chown -v --reference="$Source" "$Target"
+            __replicate-file-selinux-context "$Source" "$Target"  # sudo chcon -v --reference="$Source" "$Target"
           fi
         fi
         ;;
@@ -427,10 +403,10 @@ __dupmount()  #70
   esac
   return 0
 }
-dupmount()      { __dupmount "$1" "$NEW_ROOT" 0; }
-dupmount-ro()   { __dupmount "$1" "$NEW_ROOT" 1; }
-rdupmount()     { __dupmount "$1" "$NEW_ROOT" 2; }
-rdupmount-ro()  { __dupmount "$1" "$NEW_ROOT" 3; }
+dupmount()      { __dupmount "$1" "$NEW_ROOT" 0; return 0; }
+dupmount-ro()   { __dupmount "$1" "$NEW_ROOT" 1; return 0; }
+rdupmount()     { __dupmount "$1" "$NEW_ROOT" 2; return 0; }
+rdupmount-ro()  { __dupmount "$1" "$NEW_ROOT" 3; return 0; }
 
 __undo-dupmount()  #70
 {
@@ -482,7 +458,7 @@ __chtoor-setup() #30
   if [ -e "$NEW_ROOT" ]; then  # NEW_ROOT should be a simple directory
     [ -d "$NEW_ROOT" ] || { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- not a directory; return"; return 32; }
     mountpoint -q "$NEW_ROOT" && { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- is a mountpoint; return"; return 32; }
-    __is-same "$NEW_ROOT" "/" && { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- is the current root; return"; return 32; }
+    __is-same-file "$NEW_ROOT" "/" && { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- is the current root; return"; return 32; }
   else
     mkdir -v "$NEW_ROOT" || { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- cannot create directory; return"; return 32; }
   fi
@@ -508,7 +484,7 @@ __chtoor-setup() #30
   __print-NEW_ROOT-mounts "chtoor-setup:"
 
   ## create a marker file to visually distiguish the new root hierarchy
-  if ! __is-same "$NEW_ROOT" "/" && [ -w "$NEW_ROOT" ]; then
+  if ! __is-same-file "$NEW_ROOT" "/" && [ -w "$NEW_ROOT" ]; then
     sudo dd status=none if=/dev/null of="$NEW_ROOT/$CHTOOR_MARKER"  &&
     sudo chown "$USER:$USER" "$NEW_ROOT/$CHTOOR_MARKER"
   fi
