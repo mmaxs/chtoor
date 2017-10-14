@@ -361,7 +361,8 @@ __dupmount()  #70
           ## bind mount
           mp_src="${mp_info[SOURCE]:${#mp_src}+1:-1}"  # extract bind mount source
           echo "mount --bind '$mp_src' '$Target'"
-          sudo mount -v --bind "$mp_src" "$Target" || return 77
+          sudo mount -v --bind "$mp_src" "$Target"
+          [ $? -eq 0 ] || return 77
           echo "mount --make-slave '$Target'"
           sudo mount -v --make-slave "$Target"
         else
@@ -379,35 +380,14 @@ __dupmount()  #70
         if [ "$OptRO" -ne 0 ]; then
           if [ "$mp_src" != "${mp_info[SOURCE]}" ]; then
             echo "mount -o remount,ro,bind '$mp_src' '$Target'"
-            sudo mount -v -o remount,ro,bind "$mp_src" "$Target" || return 78
+            sudo mount -v -o remount,ro,bind "$mp_src" "$Target"
           else
             echo "mount -o remount,ro '$Target'"
-            sudo mount -v -o remount,ro "$Target" || return 78
+            sudo mount -v -o remount,ro "$Target"
           fi
+          [ $? -eq 0 ] || return 78
         fi
         ;;
-#    (directory)
-#        if sudo mount -v --bind "$SOURCE" "$TARGET"; then
-#          [ "$opt_ro" -ne 0 ] && sudo mount -v -o remount,ro,bind "$SOURCE" "$TARGET"
-#          if [ "$opt_recursive" -ne 0 ]; then
-#            findmnt --raw --noheadings --output TARGET --submounts --uniq '/'  |
-#            LC_ALL=C sort  |
-#            while IFS='' read -r src; do
-#              [ "$src" = "$SOURCE" ] && continue
-#              [ "${src:0:${#SOURCE}}" = "$SOURCE" ] && __do-bind "$src" "$CHROOT" $opt_ro
-#            done
-#          fi
-#        else
-#          return 51
-#        fi
-#        ;;
-#    (regular\ file)
-#        if sudo mount -v --bind "$SOURCE" "$TARGET"; then
-#          [ "$opt_ro" -ne 0 ] && sudo mount -v -o remount,ro,bind "$SOURCE" "$TARGET"
-#        else
-#          return 52
-#        fi
-#        ;;
     (*)
         echo >&2 "*** dupmount: '$Source' -- unexpected source type: $deref_src_type; return"
         return 70
