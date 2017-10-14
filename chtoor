@@ -82,6 +82,17 @@ __file-type()
   echo "$t"
 }
 
+__submounts()
+{
+  local Mountpoint="$(findmnt --raw --noheadings --output TARGET --uniq "$1")"
+  [ -n "$Mountpoint" ]  &&
+  {
+    findmnt --raw --noheadings --output TARGET --submounts --uniq "$Mountpoint"  |
+    LC_ALL=C sort  |
+    gawk -e 'NR==1 {next}; NR==2 {Submount=$0; print; next}; NR>2 {if (index($0, Submount)==1) next; else {Submount=$0; print}}'
+  }
+}
+
 __replicate-component() #60
 {
   local Source="$1" TargetBase="$2"
@@ -358,18 +369,12 @@ __dupmount()  #70
           sudo mount -v -t "${mp_info[FSTYPE]}" -o "${mp_info[OPTIONS]}" "$mp_src" "$Target" || return 77
         fi
         if [ "$OptRecursive" -ne 0 ]; then
-          echo ">>> {recurstion{"
-          local sub_mp='' sub_mp0='' sub_tgt=''
+          local sub_mp='' sub_tgt=''
           while IFS='' read -r sub_mp; do
-            echo ">>> sub_mp='$sub_mp'"
-            [ "$sub_mp" = "$mp_tgt" ] && continue
-            [ "$sub_mp" = "${sub_mp0##$sub_mp}" ] && continue
             sub_tgt="${sub_mp:${#mp_tgt}}"
             echo "--- dupmount: [$Source/$sub_tgt]"
             __dupmount "$Source/$sub_tgt" "$NewRoot" "$((2|$OptRO))"
-            sub_mp0="$sub_mp"
-          done < <(findmnt --raw --noheadings --output TARGET --submounts --uniq "$Source" | LC_ALL=C sort)
-          echo ">>> }recurstion}"
+          done < <(__submounts "$Source")
         fi
         if [ "$OptRO" -ne 0 ]; then
           if [ "$mp_src" != "${mp_info[SOURCE]}" ]; then
