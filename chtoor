@@ -288,8 +288,6 @@ __dupmount()
         fi
         local -A mp_info
         eval mp_info=("$(findmnt --pairs --output FSTYPE,OPTIONS,SOURCE,TARGET --uniq "$Source" | sed -e 's/\(^\|\s\)\([^=]\+\)=/\1[\2]=/g')")
-        local -a mp_submounts
-        eval mp_submounts=("$(__submounts "$Source")")
         local mp_src="${mp_info[SOURCE]%%\[/*\]}" mp_tgt="${mp_info[TARGET]}" mp_opts="${mp_info[OPTIONS]}"
         if [ "$mp_src" != "${mp_info[SOURCE]}" ]; then
           ## bind mount
@@ -306,29 +304,33 @@ __dupmount()
           sudo mount -v -t "${mp_info[FSTYPE]}" -o "$mp_opts" "$mp_src" "$Target"
           [ $? -eq 0 ] || return 77
         fi
-        if [ "$OptRecursive" -ne 0 -a ${#mp_submounts} -ne 0 ]; then
-          local sub_mp=''
-          echo "--- dupmount: [$Source] submounts:"
-          for sub_mp in "${mp_submounts[@]}"; do echo "[/$sub_mp]"; done
-          echo "---"
-          if [[ "$mp_opts" =~ (^|,)ro(,|$) ]]; then
-            ## make sure that submount points exist on read-only mounted file system; if don't, replicate them
-            for sub_mp in "${mp_submounts[@]}"; do
-              [ -e "$Target/$sub_mp" ] ||
-              {
-                sudo mount -o remount,rw "$Target"
-                for sub_mp in "${mp_submounts[@]}"; do
-                  [ -e "$Target/$sub_mp" ] || __replicate-pathname "$Source/$sub_mp" "$NewRoot"
-                done
-                sudo mount -o remount,ro "$Target"
-                break
-              }
+        if [ "$OptRecursive" -ne 0 ]; then
+          local -a submounts
+          eval submounts=("$(__submounts "$Source")")
+          if [ ${#submounts} -ne 0 ]; then
+            local sub_mp=''
+            echo "--- dupmount: [$Source] submounts:"
+            for sub_mp in "${submounts[@]}"; do echo "[/$sub_mp]"; done
+            echo "---"
+            if [[ "$mp_opts" =~ (^|,)ro(,|$) ]]; then
+              ## make sure that submount points exist on read-only mounted file system; if don't, replicate them
+              for sub_mp in "${submounts[@]}"; do
+                [ -e "$Target/$sub_mp" ] ||
+                {
+                  sudo mount -o remount,rw "$Target"
+                  for sub_mp in "${submounts[@]}"; do
+                    [ -e "$Target/$sub_mp" ] || __replicate-pathname "$Source/$sub_mp" "$NewRoot"
+                  done
+                  sudo mount -o remount,ro "$Target"
+                  break
+                }
+              done
+            fi
+            for sub_mp in "${submounts[@]}"; do
+              echo "--- dupmount: [$Source/$sub_mp]"
+              __dupmount "$Source/$sub_mp" "$NewRoot" "$((2|$OptRO))"
             done
           fi
-          for sub_mp in "${mp_submounts[@]}"; do
-            echo "--- dupmount: [$Source/$sub_mp]"
-            __dupmount "$Source/$sub_mp" "$NewRoot" "$((2|$OptRO))"
-          done
         fi
         if [ "$OptRO" -ne 0 ]; then
           if [ "$mp_src" != "${mp_info[SOURCE]}" ]; then
@@ -405,58 +407,25 @@ __bind()
         [ $? -eq 0 ] || return 77
         echo "mount --make-slave '$Target'"
         sudo mount -v --make-slave "$Target"
-        echo "mount -o remount,ro,bind '$Source' '$Target'"
-        sudo mount -v -o remount,ro,bind "$Source" "$Target"
-
-        local -A mp_info
-        eval mp_info=("$(findmnt --pairs --output FSTYPE,OPTIONS,SOURCE,TARGET --uniq "$Source" | sed -e 's/\(^\|\s\)\([^=]\+\)=/\1[\2]=/g')")
-        local -a mp_submounts
-        eval mp_submounts=("$(__submounts "$Source")")
-        local mp_src="${mp_info[SOURCE]%%\[/*\]}" mp_tgt="${mp_info[TARGET]}" mp_opts="${mp_info[OPTIONS]}"
-        if [ "$mp_src" != "${mp_info[SOURCE]}" ]; then
-          ## bind mount
-          mp_src="${mp_info[SOURCE]:${#mp_src}+1:-1}"  # extract bind mount source
-
-        else
-          ## set the 'ro' mount option early because some 'rw'-mounted filesystems become 'busy' immediately
-          [ "$OptRO" -ne 0 ] && mp_opts="$(sed -e 's/^rw,/ro,/; s/,rw,/,ro,/; s/,rw$/,ro/' <<<"$mp_opts")"
-          echo "mount -t '${mp_info[FSTYPE]}' -o '$mp_opts' '$mp_src' '$Target'"
-          sudo mount -v -t "${mp_info[FSTYPE]}" -o "$mp_opts" "$mp_src" "$Target"
-          [ $? -eq 0 ] || return 77
+        if [ "$OptRO" -ne 0 ]; then
+          echo "mount -o remount,ro,bind '$Source' '$Target'"
+          sudo mount -v -o remount,ro,bind "$Source" "$Target"
         fi
-        if [ "$OptRecursive" -ne 0 -a ${#mp_submounts} -ne 0 ]; then
-          local sub_mp=''
-          echo "--- bind: [$Source] submounts:"
-          for sub_mp in "${mp_submounts[@]}"; do echo "[/$sub_mp]"; done
-          echo "---"
-          if [[ "$mp_opts" =~ (^|,)ro(,|$) ]]; then
-            ## make sure that submount points exist on read-only mounted file system; if don't, replicate them
-            for sub_mp in "${mp_submounts[@]}"; do
-              [ -e "$Target/$sub_mp" ] ||
-              {
-                sudo mount -o remount,rw "$Target"
-                for sub_mp in "${mp_submounts[@]}"; do
-                  [ -e "$Target/$sub_mp" ] || __replicate-pathname "$Source/$sub_mp" "$NewRoot"
-                done
-                sudo mount -o remount,ro "$Target"
-                break
-              }
+        ;;&
+    (directory)
+        if [ "$OptRecursive" -ne 0 ]; then
+          local -a submounts
+          eval submounts=("$(__submounts "$Source")")
+          if [ ${#submounts} -ne 0 ]; then
+            local sub_mp=''
+            echo "--- bind: [$Source] submounts:"
+            for sub_mp in "${submounts[@]}"; do echo "[/$sub_mp]"; done
+            echo "---"
+            for sub_mp in "${submounts[@]}"; do
+              echo "--- bind: [$Source/$sub_mp]"
+              __bind "$Source/$sub_mp" "$NewRoot" "$((2|$OptRO))"
             done
           fi
-          for sub_mp in "${mp_submounts[@]}"; do
-            echo "--- bind: [$Source/$sub_mp]"
-            __bind "$Source/$sub_mp" "$NewRoot" "$((2|$OptRO))"
-          done
-        fi
-        if [ "$OptRO" -ne 0 ]; then
-          if [ "$mp_src" != "${mp_info[SOURCE]}" ]; then
-            echo "mount -o remount,ro,bind '$mp_src' '$Target'"
-            sudo mount -v -o remount,ro,bind "$mp_src" "$Target"
-          else
-            echo "mount -o remount,ro '$Target'"
-            sudo mount -v -o remount,ro "$Target"
-          fi
-          [ $? -eq 0 ] || return 78
         fi
         ;;
     (*)
