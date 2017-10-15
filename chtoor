@@ -41,7 +41,7 @@ declare NEW_ROOT="$CHTOOR_DIR/new_root"
 
 declare RUN="/bin/bash -l"  # the command to run with the changed root directory
 declare EXPORT=(DISPLAY)  # shell variables for export into new root environment
-declare -A SETUP=(  # some minimal defaults to setup the 'new_root' directory hierarchy
+declare -A SETUP=(  # some minimal defaults to setup the NEW_ROOT directory hierarchy
     [/]=rbind-ro
     [/home/"$USER"]=own-create
     [/home/"$USER"/.bash_profile]=own-copy-missing
@@ -84,15 +84,16 @@ __file-type()
 
 __submounts()
 {
-  local Mountpoint="$(findmnt --raw --noheadings --output TARGET --uniq "$1")"
-  [ -n "$Mountpoint" ]  &&
+  local Target="$(realpath -q -e "$1")"
+  [ -n "$Target" ]  &&
   {
-    findmnt --raw --noheadings --output TARGET --submounts --uniq "$Mountpoint"  |
+    findmnt --raw --noheadings --output TARGET --submounts --uniq  |
     LC_ALL=C sort  |
-    gawk -v Mountpoint="$Mountpoint" -e '
-        NR==1 {next}
-        NR==2 {Submount=$0; print substr($0, length(Mountpoint)+1); next}
-        NR>2  {if (index($0, Submount)==1) next; else {Submount=$0; print substr($0, length(Mountpoint)+1)}}
+    gawk -v Target="$Target" -e '
+        BEGIN {TargetStrLen=length(Target); Submount=""}
+        $0==Target {next}
+        index($0, Target)==1 && !Submount {Submount=$0; print substr($0, TargetStrLen+1); next}
+        index($0, Target)==1 && Submount  {if (index($0, Submount)==1) next; else {Submount=$0; print substr($0, TargetStrLen+1)}}
     '
   }
 }
@@ -253,7 +254,7 @@ __replicate-pathname() #60
 
 ## SUBROUTINES -- SETUP METHODS
 
-__dupmount()  #70
+__dupmount()
 {
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
@@ -352,7 +353,7 @@ dupmount-ro()   { __dupmount "$1" "$NEW_ROOT" 1; return 0; }
 rdupmount()     { __dupmount "$1" "$NEW_ROOT" 2; return 0; }
 rdupmount-ro()  { __dupmount "$1" "$NEW_ROOT" 3; return 0; }
 
-__undo-dupmount()  #70
+__undo-dupmount()
 {
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
@@ -371,6 +372,124 @@ undo-dupmount()      { __undo-dupmount "$1" "$NEW_ROOT" 0; }
 undo-dupmount-ro()   { __undo-dupmount "$1" "$NEW_ROOT" 1; }
 undo-rdupmount()     { __undo-dupmount "$1" "$NEW_ROOT" 2; }
 undo-rdupmount-ro()  { __undo-dupmount "$1" "$NEW_ROOT" 3; }
+
+
+__bind()
+{
+  local Source="$1" NewRoot="$2"
+  local Target="$NewRoot/$Source"
+  local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
+
+  local src_type="$(__file-type "$Source")"
+  local deref_src_type="${src_type##symbolic link / }"
+  case "$deref_src_type" in
+    (directory | regular\ file)
+        if [ -e "$Target" ]; then
+          local tgt_type="$(__file-type "$Target")"
+          local deref_tgt_type="${tgt_type##symbolic link / }"
+          [ "$deref_tgt_type" = "$deref_src_type" ]  ||
+          {
+            echo >&2 "*** bind: '$Target' -- cannot bind mismatched type: not a $deref_src_type; return"
+            return 72
+          }
+          mountpoint -q "$Target" && echo >&2 "*** bind: '$Target' -- is a mountpoint; will be over-mounted"
+        else
+          __replicate-pathname "$Source" "$NewRoot"  ||
+          {
+            echo >&2 "*** bind: '$Target' -- cannot create mountpoint; abort"
+            return 73
+          }
+        fi
+        echo "mount --bind '$Source' '$Target'"
+        sudo mount -v --bind "$Source" "$Target"
+        [ $? -eq 0 ] || return 77
+        echo "mount --make-slave '$Target'"
+        sudo mount -v --make-slave "$Target"
+        echo "mount -o remount,ro,bind '$Source' '$Target'"
+        sudo mount -v -o remount,ro,bind "$Source" "$Target"
+
+        local -A mp_info
+        eval mp_info=("$(findmnt --pairs --output FSTYPE,OPTIONS,SOURCE,TARGET --uniq "$Source" | sed -e 's/\(^\|\s\)\([^=]\+\)=/\1[\2]=/g')")
+        local -a mp_submounts
+        eval mp_submounts=("$(__submounts "$Source")")
+        local mp_src="${mp_info[SOURCE]%%\[/*\]}" mp_tgt="${mp_info[TARGET]}" mp_opts="${mp_info[OPTIONS]}"
+        if [ "$mp_src" != "${mp_info[SOURCE]}" ]; then
+          ## bind mount
+          mp_src="${mp_info[SOURCE]:${#mp_src}+1:-1}"  # extract bind mount source
+
+        else
+          ## set the 'ro' mount option early because some 'rw'-mounted filesystems become 'busy' immediately
+          [ "$OptRO" -ne 0 ] && mp_opts="$(sed -e 's/^rw,/ro,/; s/,rw,/,ro,/; s/,rw$/,ro/' <<<"$mp_opts")"
+          echo "mount -t '${mp_info[FSTYPE]}' -o '$mp_opts' '$mp_src' '$Target'"
+          sudo mount -v -t "${mp_info[FSTYPE]}" -o "$mp_opts" "$mp_src" "$Target"
+          [ $? -eq 0 ] || return 77
+        fi
+        if [ "$OptRecursive" -ne 0 -a ${#mp_submounts} -ne 0 ]; then
+          local sub_mp=''
+          echo "--- bind: [$Source] submounts:"
+          for sub_mp in "${mp_submounts[@]}"; do echo "[/$sub_mp]"; done
+          echo "---"
+          if [[ "$mp_opts" =~ (^|,)ro(,|$) ]]; then
+            ## make sure that submount points exist on read-only mounted file system; if don't, replicate them
+            for sub_mp in "${mp_submounts[@]}"; do
+              [ -e "$Target/$sub_mp" ] ||
+              {
+                sudo mount -o remount,rw "$Target"
+                for sub_mp in "${mp_submounts[@]}"; do
+                  [ -e "$Target/$sub_mp" ] || __replicate-pathname "$Source/$sub_mp" "$NewRoot"
+                done
+                sudo mount -o remount,ro "$Target"
+                break
+              }
+            done
+          fi
+          for sub_mp in "${mp_submounts[@]}"; do
+            echo "--- bind: [$Source/$sub_mp]"
+            __bind "$Source/$sub_mp" "$NewRoot" "$((2|$OptRO))"
+          done
+        fi
+        if [ "$OptRO" -ne 0 ]; then
+          if [ "$mp_src" != "${mp_info[SOURCE]}" ]; then
+            echo "mount -o remount,ro,bind '$mp_src' '$Target'"
+            sudo mount -v -o remount,ro,bind "$mp_src" "$Target"
+          else
+            echo "mount -o remount,ro '$Target'"
+            sudo mount -v -o remount,ro "$Target"
+          fi
+          [ $? -eq 0 ] || return 78
+        fi
+        ;;
+    (*)
+        echo >&2 "*** bind: '$Source' -- unexpected source type: $deref_src_type; return"
+        return 70
+        ;;
+  esac
+  return 0
+}
+bind()      { __bind "$1" "$NEW_ROOT" 0; return 0; }
+bind-ro()   { __bind "$1" "$NEW_ROOT" 1; return 0; }
+rbind()     { __bind "$1" "$NEW_ROOT" 2; return 0; }
+rbind-ro()  { __bind "$1" "$NEW_ROOT" 3; return 0; }
+
+__undo-bind()
+{
+  local Source="$1" NewRoot="$2"
+  local Target="$NewRoot/$Source"
+  local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
+
+  mountpoint -q "$Target"  ||
+  {
+    echo >&2 "*** undo-bind: '$Target' -- not a mountpoint; skipped"
+    return 0
+  }
+
+  echo "umount -R '$Target'"
+  sudo umount -v -R "$Target"
+}
+undo-bind()      { __undo-bind "$1" "$NEW_ROOT" 0; }
+undo-bind-ro()   { __undo-bind "$1" "$NEW_ROOT" 1; }
+undo-rbind()     { __undo-bind "$1" "$NEW_ROOT" 2; }
+undo-rbind-ro()  { __undo-bind "$1" "$NEW_ROOT" 3; }
 
 
 ## SUBROUTINES -- CHTOOR COMMANDS
