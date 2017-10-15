@@ -97,81 +97,8 @@ __submounts()
   }
 }
 
-__replicate-component() #60
-{
-  local Source="$1" TargetBase="$2"
-  local Target="$2/$1"
-  [ -e "$Source" ] || { echo >&2 "*** replicate-component: Source='$Source' -- empty / non-existing argument; return"; return 60; }
-  [ -e "$TargetBase" ] || { echo >&2 "*** replicate-component: TargetBase='$TargetBase' -- empty / non-existing argument; return"; return 60; }
 
-  local src_type="$(__file-type "$Source")"
-  case "$src_type" in
-    (directory)
-        if [ -e "$Target" ]; then
-          [ -d "$Target" ]  ||
-          {
-            echo >&2 "*** replicate-component: '$Target' -- already exist; mismatched type: not a directory; return"
-            return 68
-          }
-        else
-          sudo mkdir -v "$Target"  ||
-          {
-            echo >&2 "*** replicate-component: '$Target' -- cannot create directory; return"
-            return 61
-          }
-        fi
-        ;;&
-    (regular\ file)
-        if [ -e "$Target" ]; then
-          [ -f "$Target" ]  ||
-          {
-            echo >&2 "*** replicate-component: '$Target' -- already exist; mismatched type: not a file; return"
-            return 68
-          }
-        else
-          sudo dd status=none if=/dev/null of="$Target"  ||
-          {
-            echo >&2 "*** replicate-component: '$Target' -- cannot create file; return"
-            return 61
-          }
-        fi
-        ;;&
-    (directory | regular\ file)
-        sudo chmod -v --reference="$Source" "$Target"
-        sudo chown -v --reference="$Source" "$Target"
-        sudo chcon -v --reference="$Source" "$Target"
-        ;;
-    (symbolic\ link\ *)
-        if [ -e "$Target" ]; then
-          local deref_src_type="${src_type##symbolyc link / }"
-          if [ -n "$deref_src_type" ]; then
-            local tgt_type="$(__file-type "$Target")"
-            local deref_tgt_type="${tgt_type##symbolic link / }"
-            if [ -n "$deref_tgt_type" ]; then
-              [ "$deref_tgt_type" = "$deref_src_type" ]  ||
-              {
-                echo >&2 "*** replicate-component: '$Target' -- already exist; mismatched type: not a $deref_src_type; return"
-                return 68
-              }
-            fi
-          fi
-        else
-          sudo cp -v -P --preserve=all -T "$Source" "$Target"  ||
-          {
-            echo >&2 "*** replicate-component: '$Target' -- cannot copy symlink; return"
-            return 61
-          }
-        fi
-        ;;
-    (*)
-        echo >&2 "*** replicate-component: '$Source' -- unsupported source type: $src_type; return"
-        return 69
-        ;;
-  esac
-  return 0
-}
-
-__replicate-file-attributes()
+__copy-file-attributes()
 {
   local Source="$1" Target="$2" StatFormat="$3" ChAttrCmd="$4"
   [ -e "$Source" ] || { echo >&2 "*** replicate-file-attributes: Source='$Source' -- empty / non-existing argument; return"; return 1; }
@@ -185,9 +112,9 @@ __replicate-file-attributes()
   [ "${src_attrs:-$Source}" != "${tgt_attrs:-$Target}" ]  &&
   sudo $ChAttrCmd -v --reference="$Source" "$Target"
 }
-__replicate-file-permissions()  { __replicate-file-attributes "$1" "$2" "%#05a" chmod; }
-__replicate-file-ownerships()  { __replicate-file-attributes "$1" "$2" "%U:%G" chown; }
-__replicate-file-selinux-context()  { __replicate-file-attributes "$1" "$2" "%C" chcon; }
+__copy-file-permissions()  { __copy-file-attributes "$1" "$2" "%#05a" chmod; }
+__copy-file-ownerships()  { __copy-file-attributes "$1" "$2" "%U:%G" chown; }
+__copy-file-selinux-context()  { __copy-file-attributes "$1" "$2" "%C" chcon; }
 
 __replicate-pathname() #60
 {
@@ -244,9 +171,9 @@ __replicate-pathname() #60
             ;;
       esac
     fi
-    __replicate-file-permissions "$src" "$tgt"  # sudo chmod -v --reference="$src" "$tgt"
-    __replicate-file-ownerships "$src" "$tgt"  # sudo chown -v --reference="$src" "$tgt"
-    __replicate-file-selinux-context "$src" "$tgt"  # sudo chcon -v --reference="$src" "$tgt"
+    __copy-file-permissions "$src" "$tgt"  # sudo chmod -v --reference="$src" "$tgt"
+    __copy-file-ownerships "$src" "$tgt"  # sudo chown -v --reference="$src" "$tgt"
+    __copy-file-selinux-context "$src" "$tgt"  # sudo chcon -v --reference="$src" "$tgt"
   done < <(dirname "$Source")
 
   ## replicate Source itself
@@ -283,9 +210,9 @@ __replicate-pathname() #60
         fi
         ;;&
     (directory | regular\ file)
-        __replicate-file-permissions "$Source" "$Target"  # sudo chmod -v --reference="$Source" "$Target"
-        __replicate-file-ownerships "$Source" "$Target"  # sudo chown -v --reference="$Source" "$Target"
-        __replicate-file-selinux-context "$Source" "$Target"  # sudo chcon -v --reference="$Source" "$Target"
+        __copy-file-permissions "$Source" "$Target"  # sudo chmod -v --reference="$Source" "$Target"
+        __copy-file-ownerships "$Source" "$Target"  # sudo chown -v --reference="$Source" "$Target"
+        __copy-file-selinux-context "$Source" "$Target"  # sudo chcon -v --reference="$Source" "$Target"
         ;;
     (symbolic\ link\ /\ *)
         if [ -e "$Target" ]; then
@@ -308,9 +235,9 @@ __replicate-pathname() #60
             return 62
           }
           if [ -e "$Target" ]; then
-            __replicate-file-permissions "$Source" "$Target"  # sudo chmod -v --reference="$Source" "$Target"
-            __replicate-file-ownerships "$Source" "$Target"  # sudo chown -v --reference="$Source" "$Target"
-            __replicate-file-selinux-context "$Source" "$Target"  # sudo chcon -v --reference="$Source" "$Target"
+            __copy-file-permissions "$Source" "$Target"  # sudo chmod -v --reference="$Source" "$Target"
+            __copy-file-ownerships "$Source" "$Target"  # sudo chown -v --reference="$Source" "$Target"
+            __copy-file-selinux-context "$Source" "$Target"  # sudo chcon -v --reference="$Source" "$Target"
           fi
         fi
         ;;
@@ -429,7 +356,7 @@ __undo-dupmount()  #70
 {
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
-  local -i Opt_ro=$((${3:-0}&1)) Opt_recursive=$((${3:-0}&2))
+  local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
 
   mountpoint -q "$Target"  ||
   {
@@ -473,7 +400,8 @@ __chtoor-setup() #30
   }
 
   ## create a new root directory
-  if [ -e "$NEW_ROOT" ]; then  # NEW_ROOT should be a simple directory
+  if [ -e "$NEW_ROOT" ]; then
+    ## NEW_ROOT should be a simple directory
     [ -d "$NEW_ROOT" ] || { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- not a directory; return"; return 32; }
     mountpoint -q "$NEW_ROOT" && { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- is a mountpoint; return"; return 32; }
     __is-same-file "$NEW_ROOT" "/" && { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- is the current root; return"; return 32; }
@@ -547,7 +475,8 @@ __chtoor-undo() #50
   done < <(IFS=$'\n'; LC_ALL=C sort -r <<<"${!SETUP[*]}")
 
   echo
-  if mountpoint -q "$NEW_ROOT"; then  # NEW_ROOT should be a simple directory
+  if mountpoint -q "$NEW_ROOT"; then
+    ## NEW_ROOT should be a simple directory
     echo "umount -R '$NEW_ROOT'"
     sudo umount -v -R "$NEW_ROOT"
   fi
