@@ -90,10 +90,10 @@ __submounts()
     findmnt --raw --noheadings --output TARGET --submounts --uniq  |
     LC_ALL=C sort  |
     gawk -v Target="$Target" -e '
-        BEGIN {TargetStrLen=length(Target); Submount=""}
-        $0==Target {next}
-        index($0, Target)==1 && !Submount {Submount=$0; print substr($0, TargetStrLen+1); next}
-        index($0, Target)==1 && Submount  {if (index($0, Submount)==1) next; else {Submount=$0; print substr($0, TargetStrLen+1)}}
+        BEGIN { TargetStrLen=length(Target); Submount="" }
+        $0==Target { next }
+        index($0, Target)==1 && !Submount { Submount=$0; print substr($0, TargetStrLen+1); next }
+        index($0, Target)==1 && Submount  { if (index($0, Submount)==1) next; else { Submount=$0; print substr($0, TargetStrLen+1) } }
     '
   }
 }
@@ -327,6 +327,10 @@ __dupmount()
               done
             fi
             for sub_mp in "${submounts[@]}"; do
+              if __is-same-file "$Source/$sub_mp" "$NewRoot"; then
+                echo "--- dupmount: [$Source/$sub_mp] -- skip self-recursion mount"
+                continue
+              fi
               echo "--- dupmount: [$Source/$sub_mp]"
               __dupmount "$Source/$sub_mp" "$NewRoot" "$((2|$OptRO))"
             done
@@ -422,6 +426,10 @@ __bind()
             for sub_mp in "${submounts[@]}"; do echo "[/$sub_mp]"; done
             echo "---"
             for sub_mp in "${submounts[@]}"; do
+              if __is-same-file "$Source/$sub_mp" "$NewRoot"; then
+                echo "--- bind: [$Source/$sub_mp] -- skip self-recursion mount"
+                continue
+              fi
               echo "--- bind: [$Source/$sub_mp]"
               __bind "$Source/$sub_mp" "$NewRoot" "$((2|$OptRO))"
             done
@@ -531,7 +539,7 @@ __chtoor-go() #40
   [ -f "$CHTOOR_DIR/$CHTOOR_MARKER" ]  ||
   __chtoor-setup  &&
   {
-    sudo chroot -- "$NEW_ROOT" su -- "$USER" "$RUN"
+    sudo chroot -- "$NEW_ROOT" su -- "$USER" $RUN
   }
 }
 
