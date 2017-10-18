@@ -473,15 +473,12 @@ undo-rbind-ro()  { __undo-bind "$1" "$NEW_ROOT" 3; }
 
 __print-NEW_ROOT-mounts()  # print a summary of the existing bind-mounts for NEW_ROOT hierarchy
 {
-  local tgt=''
   echo "---${*:+ $*} '$NEW_ROOT' mounts:"
-  findmnt --raw --noheadings --output TARGET | grep -F "$(realpath -q -e "$NEW_ROOT")" | LC_ALL=C sort  |
-  while IFC='' read -r tgt || [ "$tgt" ]; do
-    findmnt --pairs --output TARGET,SOURCE,PROPAGATION,FSTYPE,OPTIONS "$tgt" | sed -b -e 's/" /"\n        /g'
-  done
-
-  findmnt --list --output TARGET,SOURCE,PROPAGATION  |
-  gawk -v P="$(realpath -q -e "$NEW_ROOT")" -e 'NR==1 {print; next}; index($0, P) {print | "LC_ALL=C sort"}'
+  findmnt --list --output TARGET,SOURCE,PROPAGATION,OPTIONS  |
+  gawk -v NewRoot="$(realpath -q -e "$NEW_ROOT")" -e '
+      NR==1 { $0 = gensub(/(\s)OPTIONS$/, "\\1 R/W", 1); print; next }
+      index($0, NewRoot)==1 { $0 = gensub(/(\s)(|\S+,)(ro|rw)(,\S+|)$/, "\\1 \\3", 1); print | "LC_ALL=C sort" }
+  '
   echo "---"
 }
 
