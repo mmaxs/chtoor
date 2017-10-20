@@ -2,15 +2,6 @@
 
 ## DECLARATIONS
 
-declare USER="$(whoami)"  # set it to the effective user ID name
-declare CHTOOR_MARKER=".chtoor"  # the file name to visually denote the new root environment establishment
-# For quick recognizing that the new root environment setup has been performed (i.e. some bind
-# mounts to '${CHTOOR_DIR}/new_root' are created) the CHTOOR_MARKER file is placed into CHTOOR_DIR.
-# If after setup complete, the '${CHTOOR_DIR}/new_root' directory appears to be write enabled, and
-# it does not appear to be bind-mounted to the current root directory, the CHTOOR_MARKER file is
-# additionally created therein for the new root directory hierarchy can be distiguished in some visual
-# way after switching into it.
-
 declare OPT_MODE="go"
 declare OPT_CONFIG_FILE=""
 while getopts "f:GSU" OPT; do
@@ -33,13 +24,24 @@ while getopts "f:GSU" OPT; do
 done
 shift $((OPTIND-1))
 
-declare CHTOOR_DIR="$1"  # the directory where to create the 'new_root'
+declare CHTOOR_DIR="$1"  # the directory where to create the new root
 [ -z "$CHTOOR_DIR" ] && { echo >&2 "*** CHTOOR_DIR: directory not specified; exit"; exit 2; }
 [ -d "$CHTOOR_DIR" ] || { echo >&2 "*** CHTOOR_DIR: '$CHTOOR_DIR' -- not exist / not a directory; exit"; exit 2; }
 
 declare NEW_ROOT="$CHTOOR_DIR/new_root"
+declare OWN_DIR="$CHTOOR_DIR/own_files"
+declare CHTOOR_MARKER=".chtoor"  # the file name to visually denote the new root environment establishment
+# For quick recognizing that the new root environment setup has been performed (i.e. some bind
+# mounts to NEW_ROOT are created) the CHTOOR_MARKER file is placed into CHTOOR_DIR.
+# If after setup complete, the NEW_ROOT directory appears to be write enabled, and
+# it does not appear to be bind-mounted to the current root directory, the CHTOOR_MARKER file is
+# additionally created therein for the new root directory hierarchy can be distiguished in some visual
+# way after switching into it.
 
-declare RUN="/bin/bash -l"  # the command to run with the changed root directory
+declare USER="$(id -nu)"
+declare GROUP="$(id -ng)"
+
+declare RUN="bash -l"  # the command to run with the changed root directory
 declare EXPORT=(DISPLAY)  # shell variables for export into new root environment
 declare -A SETUP=(  # some minimal defaults to setup the NEW_ROOT directory hierarchy
     [/]=rbind-ro
@@ -52,7 +54,7 @@ declare -A SETUP=(  # some minimal defaults to setup the NEW_ROOT directory hier
 
 ## SUBROUTINES -- GENERAL
 
-__is-same-file() #10
+__is-same-file()
 {
   local LHS="$(realpath -q -e "$1")" RHS="$(realpath -q -e "$2")"
   [ -n "$LHS" -a -n "$RHS" ]  &&
@@ -259,6 +261,8 @@ __dupmount()
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
   local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
+  [ -e "$Source" ] || { echo >&2 "*** dupmount: Source='$Source' -- empty / non-existing argument; return"; return 70; }
+  [ -e "$NewRoot" ] || { echo >&2 "*** dupmount: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 70; }
 
   mountpoint -q "$Source"  ||
   {
@@ -292,6 +296,7 @@ __dupmount()
         if [ "$mp_src" != "${mp_info[SOURCE]}" ]; then
           ## bind mount
           mp_src="${mp_info[SOURCE]:${#mp_src}+1:-1}"  # extract bind mount source
+          __is-same-file "$mp_src" "$Target" && { echo "--- dupmount: skip bind mounting the file to itself"; return 0; }
           echo "mount --bind '$mp_src' '$Target'"
           sudo mount -v --bind "$mp_src" "$Target"
           [ $? -eq 0 ] || return 77
@@ -349,7 +354,7 @@ __dupmount()
         ;;
     (*)
         echo >&2 "*** dupmount: '$Source' -- unexpected source type: $deref_src_type; return"
-        return 70
+        return 79
         ;;
   esac
   return 0
@@ -364,6 +369,8 @@ __undo-dupmount()
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
   local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
+  [ -e "$Source" ] || { echo >&2 "*** undo-dupmount: Source='$Source' -- empty / non-existing argument; return"; return 70; }
+  [ -e "$NewRoot" ] || { echo >&2 "*** undo-dupmount: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 70; }
 
   mountpoint -q "$Target"  ||
   {
@@ -385,6 +392,10 @@ __bind()
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
   local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
+  [ -e "$Source" ] || { echo >&2 "*** bind: Source='$Source' -- empty / non-existing argument; return"; return 70; }
+  [ -e "$NewRoot" ] || { echo >&2 "*** bind: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 70; }
+
+  # __is-same-file "$Source" "$Target" && { echo "--- bind: skip mounting the file to itself"; return 0; }
 
   local src_type="$(__file-type "$Source")"
   local deref_src_type="${src_type##symbolic link / }"
@@ -414,6 +425,7 @@ __bind()
         if [ "$OptRO" -ne 0 ]; then
           echo "mount -o remount,ro,bind '$Source' '$Target'"
           sudo mount -v -o remount,ro,bind "$Source" "$Target"
+          [ $? -eq 0 ] || return 78
         fi
         ;;&
     (directory)
@@ -438,7 +450,7 @@ __bind()
         ;;
     (*)
         echo >&2 "*** bind: '$Source' -- unexpected source type: $deref_src_type; return"
-        return 70
+        return 79
         ;;
   esac
   return 0
@@ -453,6 +465,8 @@ __undo-bind()
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
   local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
+  [ -e "$Source" ] || { echo >&2 "*** undo-bind: Source='$Source' -- empty / non-existing argument; return"; return 70; }
+  [ -e "$NewRoot" ] || { echo >&2 "*** undo-bind: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 70; }
 
   mountpoint -q "$Target"  ||
   {
@@ -467,6 +481,53 @@ undo-bind()      { __undo-bind "$1" "$NEW_ROOT" 0; }
 undo-bind-ro()   { __undo-bind "$1" "$NEW_ROOT" 1; }
 undo-rbind()     { __undo-bind "$1" "$NEW_ROOT" 2; }
 undo-rbind-ro()  { __undo-bind "$1" "$NEW_ROOT" 3; }
+
+
+__own()
+{
+  local OwnDir="$1" Source="$2" NewRoot="$3"
+  local OwnSource="$OwnDir/$Source" Target="$NewRoot/$Source"
+  [ -e "$OwnDir" ] || { echo >&2 "*** own: OwnDir='$OwnDir' -- empty / non-existing argument; return"; return 70; }
+  [ -e "$Source" ] || { echo >&2 "*** own: Source='$Source' -- empty / non-existing argument; return"; return 70; }
+  [ -e "$NewRoot" ] || { echo >&2 "*** own: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 70; }
+
+  [ -e "$OwnSource" ] || { echo >&2 "*** own: '$OwnSource' -- non-existing source; return"; return 71; }
+  __is-same-file "$OwnSource" "$Target" && { echo "--- own: skip mounting the file to itself"; return 0; }
+
+  local src_type="$(__file-type "$OwnSource")"
+  local deref_src_type="${src_type##symbolic link / }"
+  case "$deref_src_type" in
+    (directory | regular\ file)
+        if [ -e "$Target" ]; then
+          local tgt_type="$(__file-type "$Target")"
+          local deref_tgt_type="${tgt_type##symbolic link / }"
+          [ "$deref_tgt_type" = "$deref_src_type" ]  ||
+          {
+            echo >&2 "*** own: '$Target' -- cannot bind mismatched type: not a $deref_src_type; return"
+            return 72
+          }
+          mountpoint -q "$Target" && echo >&2 "*** own: '$Target' -- is a mountpoint; will be over-mounted"
+        else
+          __replicate-pathname "$Source" "$NewRoot"  ||
+          {
+            echo >&2 "*** own: '$Target' -- cannot create mountpoint; abort"
+            return 73
+          }
+        fi
+        echo "mount --bind '$OwnSource' '$Target'"
+        sudo mount -v --bind "$OwnSource" "$Target"
+        [ $? -eq 0 ] || return 77
+        echo "mount --make-slave '$Target'"
+        sudo mount -v --make-slave "$Target"
+        ;;
+    (*)
+        echo >&2 "*** own: '$OwnSource' -- unexpected source type: $deref_src_type; return"
+        return 70
+        ;;
+  esac
+  return 0
+}
+own() { __own "$OWN_DIR" "$1" "$NEW_ROOT"; }
 
 
 ## SUBROUTINES -- CHTOOR COMMANDS
@@ -501,6 +562,13 @@ __chtoor-setup() #30
   else
     mkdir -v "$NEW_ROOT" || { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- cannot create directory; return"; return 32; }
   fi
+  ## create a directory for own files
+  if [ -e "$OWN_DIR" ]; then
+    [ -d "$OWN_DIR" ] || { echo >&2 "*** chtoor-setup: '$OWN_DIR' -- not a directory; return"; return 32; }
+    __is-same-file "$OWN_DIR" "/" && { echo >&2 "*** chtoor-setup: '$OWN_DIR' -- is the current root; return"; return 32; }
+  else
+    mkdir -v "$OWN_DIR" || { echo >&2 "*** chtoor-setup: '$OWN_DIR' -- cannot create directory; return"; return 32; }
+  fi
 
   ## do setup the new root hierarchy
   local method='' item_methods='' item=''
@@ -513,7 +581,7 @@ __chtoor-setup() #30
     "$method" "$item"  ||
     {
       local -i err_code=$?
-      echo >&2 "*** chtoor-setup: $method error $err_code; abort"
+      echo >&2 "*** chtoor-setup: '$method' -- method error ($err_code); abort"
       echo >&2 "*** chtoor-setup: there can be several mounts having been done so far"
       __print-NEW_ROOT-mounts "chtoor-setup:"
       return "$err_code";
@@ -525,22 +593,22 @@ __chtoor-setup() #30
   ## create a marker file to visually distiguish the new root hierarchy
   if ! __is-same-file "$NEW_ROOT" "/" && [ -w "$NEW_ROOT" ]; then
     sudo dd status=none if=/dev/null of="$NEW_ROOT/$CHTOOR_MARKER"  &&
-    sudo chown "$USER:$USER" "$NEW_ROOT/$CHTOOR_MARKER"
+    sudo chown "$USER:$GROUP" "$NEW_ROOT/$CHTOOR_MARKER"
   fi
 
   return 0
 }
 
-__chtoor-go() #40
+__chtoor-go()
 {
   [ -f "$CHTOOR_DIR/$CHTOOR_MARKER" ]  ||
   __chtoor-setup  &&
   {
-    sudo chroot -- "$NEW_ROOT" su -- "$USER" $RUN
+    exec sudo --preserve-env chroot --userspec="$USER:$GROUP" -- "$NEW_ROOT" $RUN
   }
 }
 
-__chtoor-undo() #50
+__chtoor-undo()
 {
   [ -d "$NEW_ROOT" ] || { echo >&2 "*** chtoor-undo: '$NEW_ROOT' -- not a directory; return"; return 51; }
   [ "$(realpath -q -e "$NEW_ROOT")" = "/" ] && { echo >&2 "*** chtoor-undo: '$NEW_ROOT' -- is the current root mountpoint; return"; return 51; }
@@ -560,7 +628,7 @@ __chtoor-undo() #50
     "$method" "$item"  ||
     {
       local -i err_code=$?
-      echo >&2 "*** chtoor-undo: $method error $err_code; abort"
+      echo >&2 "*** chtoor-undo: '$method' -- method error ($err_code); abort"
       echo >&2 "*** chtoor-undo: some mounts can still remain undone"
       __print-NEW_ROOT-mounts "chtoor-undo:"
       return "$err_code";
@@ -585,7 +653,7 @@ __chtoor-undo() #50
 
 ## MAIN
 
-__verify-setup-methods() #20
+__verify-setup-methods()
 {
   local method='' item_methods=''
   for item_methods in "${SETUP[@]}"; do
@@ -597,7 +665,7 @@ __verify-setup-methods() #20
   done
   return 0
 }
-__verify-undo-methods() #20
+__verify-undo-methods()
 {
   local method='' item_methods=''
   for item_methods in "${SETUP[@]}"; do
