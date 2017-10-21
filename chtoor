@@ -39,8 +39,6 @@ declare CHTOOR_MARKER=".chtoor"  # the file name to visually denote the new root
 # way after switching into it.
 
 declare USER="$(id -nu)"
-declare GROUP="$(id -ng)"
-
 declare RUN="bash -l"  # the command to run with the changed root directory
 declare EXPORT=(DISPLAY)  # shell variables for export into new root environment
 declare -A SETUP=(  # some minimal defaults to setup the NEW_ROOT directory hierarchy
@@ -119,7 +117,7 @@ __copy-file-permissions()  { __copy-file-attributes "$1" "$2" "%#05a" chmod; }
 __copy-file-ownerships()  { __copy-file-attributes "$1" "$2" "%U:%G" chown; }
 __copy-file-selinux-context()  { __copy-file-attributes "$1" "$2" "%C" chcon; }
 
-__replicate-pathname() #60
+__replicate-pathname()
 {
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
@@ -138,7 +136,7 @@ __replicate-pathname() #60
     if [ -e "$tgt" ]; then
       [ -d "$tgt" ]  ||
       {
-        echo >&2 "*** replicate-pathname: '$tgt' -- path component already exists; mismatched type: not a directory; abort"
+        echo >&2 "*** replicate-pathname: '$tgt' -- target path component exists and is of mismatched type: not a directory; abort"
         return 68
       }
     else
@@ -186,7 +184,7 @@ __replicate-pathname() #60
         if [ -e "$Target" ]; then
           [ -d "$Target" ]  ||
           {
-            echo >&2 "*** replicate-pathname: '$Target' -- target already exists; mismatched type: not a directory; abort"
+            echo >&2 "*** replicate-pathname: '$Target' -- target already exists and is of mismatched type: not a directory; abort"
             return 66
           }
         else
@@ -201,7 +199,7 @@ __replicate-pathname() #60
         if [ -e "$Target" ]; then
           [ -f "$Target" ]  ||
           {
-            echo >&2 "*** replicate-pathname: '$Target' -- target already exists; mismatched type: not a file; abort"
+            echo >&2 "*** replicate-pathname: '$Target' -- target already exists and is of mismatched type: not a file; abort"
             return 66
           }
         else
@@ -226,7 +224,7 @@ __replicate-pathname() #60
             if [ -n "$deref_tgt_type" ]; then
               [ "$deref_tgt_type" = "$deref_src_type" ]  ||
               {
-                echo >&2 "*** replicate-pathname: '$Target' -- target already exists; mismatched type: not a $deref_src_type; abort"
+                echo >&2 "*** replicate-pathname: '$Target' -- target already exists and is of mismatched type: not a $deref_src_type; abort"
                 return 66
               }
             fi
@@ -266,7 +264,7 @@ __dupmount()
 
   mountpoint -q "$Source"  ||
   {
-    echo >&2 "*** dupmount: '$Source' -- not a mountpoint; return"
+    echo >&2 "*** dupmount: '$Source' -- source is not a mountpoint; return"
     return 71
   }
 
@@ -279,10 +277,10 @@ __dupmount()
           local deref_tgt_type="${tgt_type##symbolic link / }"
           [ "$deref_tgt_type" = "$deref_src_type" ]  ||
           {
-            echo >&2 "*** dupmount: '$Target' -- cannot mount mismatched type: not a $deref_src_type; return"
+            echo >&2 "*** dupmount: '$Target' -- cannot mount to existing target of mismatched type: not a $deref_src_type; return"
             return 72
           }
-          mountpoint -q "$Target" && echo >&2 "*** dupmount: '$Target' -- is a mountpoint; will be over-mounted"
+          mountpoint -q "$Target" && echo >&2 "*** dupmount: '$Target' -- target is a mountpoint; will be over-mounted"
         else
           __replicate-pathname "$Source" "$NewRoot"  ||
           {
@@ -406,10 +404,10 @@ __bind()
           local deref_tgt_type="${tgt_type##symbolic link / }"
           [ "$deref_tgt_type" = "$deref_src_type" ]  ||
           {
-            echo >&2 "*** bind: '$Target' -- cannot bind mismatched type: not a $deref_src_type; return"
+            echo >&2 "*** bind: '$Target' -- cannot mount to existing target of mismatched type: not a $deref_src_type; return"
             return 72
           }
-          mountpoint -q "$Target" && echo >&2 "*** bind: '$Target' -- is a mountpoint; will be over-mounted"
+          mountpoint -q "$Target" && echo >&2 "*** bind: '$Target' -- target is a mountpoint; will be over-mounted"
         else
           __replicate-pathname "$Source" "$NewRoot"  ||
           {
@@ -485,16 +483,16 @@ undo-rbind-ro()  { __undo-bind "$1" "$NEW_ROOT" 3; }
 
 __own()
 {
-  local OwnDir="$1" Source="$2" NewRoot="$3"
-  local OwnSource="$OwnDir/$Source" Target="$NewRoot/$Source"
+  local OwnDir="$1" Origin="$2" NewRoot="$3"
+  local Source="$OwnDir/$Origin" Target="$NewRoot/$Origin"
   [ -e "$OwnDir" ] || { echo >&2 "*** own: OwnDir='$OwnDir' -- empty / non-existing argument; return"; return 70; }
-  [ -e "$Source" ] || { echo >&2 "*** own: Source='$Source' -- empty / non-existing argument; return"; return 70; }
+  [ -e "$Origin" ] || { echo >&2 "*** own: Origin='$Origin' -- empty / non-existing argument; return"; return 70; }
   [ -e "$NewRoot" ] || { echo >&2 "*** own: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 70; }
 
-  [ -e "$OwnSource" ] || { echo >&2 "*** own: '$OwnSource' -- non-existing source; return"; return 71; }
-  __is-same-file "$OwnSource" "$Target" && { echo "--- own: skip mounting the file to itself"; return 0; }
+  [ -e "$Source" ] || { echo >&2 "*** own: '$Source' -- non-existing source; return"; return 71; }
+  __is-same-file "$Source" "$Target" && { echo "--- own: skip mounting the file to itself"; return 0; }
 
-  local src_type="$(__file-type "$OwnSource")"
+  local src_type="$(__file-type "$Source")"
   local deref_src_type="${src_type##symbolic link / }"
   case "$deref_src_type" in
     (directory | regular\ file)
@@ -503,25 +501,32 @@ __own()
           local deref_tgt_type="${tgt_type##symbolic link / }"
           [ "$deref_tgt_type" = "$deref_src_type" ]  ||
           {
-            echo >&2 "*** own: '$Target' -- cannot bind mismatched type: not a $deref_src_type; return"
+            echo >&2 "*** own: '$Target' -- cannot bind to existing target of mismatched type: not a $deref_src_type; return"
             return 72
           }
-          mountpoint -q "$Target" && echo >&2 "*** own: '$Target' -- is a mountpoint; will be over-mounted"
+          mountpoint -q "$Target" && echo >&2 "*** own: '$Target' -- target is a mountpoint; will be over-mounted"
         else
-          __replicate-pathname "$Source" "$NewRoot"  ||
+          local osrc_type="$(__file-type "$Origin")"
+          local deref_osrc_type="${osrc_type##symbolic link / }"
+          [ "$deref_osrc_type" = "$deref_src_type" ]  ||
           {
-            echo >&2 "*** own: '$Target' -- cannot create mountpoint; abort"
+            echo >&2 "*** own: Origin='$Origin' and Source='$Source' are of mismatched types; return"
             return 73
           }
+          __replicate-pathname "$Origin" "$NewRoot"  ||
+          {
+            echo >&2 "*** own: '$Target' -- cannot create mountpoint; abort"
+            return 74
+          }
         fi
-        echo "mount --bind '$OwnSource' '$Target'"
-        sudo mount -v --bind "$OwnSource" "$Target"
+        echo "mount --bind '$Source' '$Target'"
+        sudo mount -v --bind "$Source" "$Target"
         [ $? -eq 0 ] || return 77
         echo "mount --make-slave '$Target'"
         sudo mount -v --make-slave "$Target"
         ;;
     (*)
-        echo >&2 "*** own: '$OwnSource' -- unexpected source type: $deref_src_type; return"
+        echo >&2 "*** own: '$Source' -- unexpected source type: $deref_src_type; return"
         return 70
         ;;
   esac
@@ -544,7 +549,7 @@ __print-NEW_ROOT-mounts()  # print a summary of the existing bind-mounts for NEW
 }
 
 
-__chtoor-setup() #30
+__chtoor-setup()
 {
   ## create a setup establishment marker file
   dd status=none if=/dev/null of="$CHTOOR_DIR/$CHTOOR_MARKER"  ||
@@ -593,7 +598,7 @@ __chtoor-setup() #30
   ## create a marker file to visually distiguish the new root hierarchy
   if ! __is-same-file "$NEW_ROOT" "/" && [ -w "$NEW_ROOT" ]; then
     sudo dd status=none if=/dev/null of="$NEW_ROOT/$CHTOOR_MARKER"  &&
-    sudo chown "$USER:$GROUP" "$NEW_ROOT/$CHTOOR_MARKER"
+    sudo chown "$USER:$USER" "$NEW_ROOT/$CHTOOR_MARKER"
   fi
 
   return 0
@@ -604,7 +609,7 @@ __chtoor-go()
   [ -f "$CHTOOR_DIR/$CHTOOR_MARKER" ]  ||
   __chtoor-setup  &&
   {
-    exec sudo --preserve-env chroot --userspec="$USER:$GROUP" -- "$NEW_ROOT" $RUN
+    exec sudo --preserve-env chroot --userspec="$USER:$USER" -- "$NEW_ROOT" $RUN
   }
 }
 
@@ -621,7 +626,7 @@ __chtoor-undo()
     method="${item_methods##*!}"
     [ -z "$method" ] && continue
     if [ "$method" = "$item_methods" ]; then
-      method="undo-$method"
+      method="undo-$method"  # default corresponding undo method
       declare -F "$method" >/dev/null || continue  # skip non-existing default corresponding undo method
     fi
     echo "--- chtoor-undo: [$item]='$method'"
@@ -653,21 +658,36 @@ __chtoor-undo()
 
 ## MAIN
 
-__verify-setup-methods()
+__verify-setup-items()
 {
-  local method='' item_methods=''
-  for item_methods in "${SETUP[@]}"; do
+  local item_src='' item_methods='' method=''
+  while IFS='' read -r item_src; do
+    [ -z "$item_src" ] && continue  # skip items with empty source
+    item_methods="${SETUP[$item_src]}"
     method="${item_methods%%!*}"
-    [ -z "$method" ] && continue  # skip empty records
-    declare -F "$method" >/dev/null && continue
-    echo >&2 "*** SETUP: '$method' -- unknown setup method; exit"
-    exit 21
-  done
+    [ -z "$method" ] && continue  # skip items with empty method
+
+    [ -e "$item_src" ]  ||
+    {
+      echo >&2 "*** SETUP: [$item_src]='$method' -- non-existing origin; exit"
+      exit 21
+    }
+    declare -F "$method" >/dev/null  ||
+    {
+      echo >&2 "*** SETUP: [$item_src]='$method' -- unknown method; exit"
+      exit 22
+    }
+    [ "$method" = "own" -a ! -e "$OWN_DIR/$item_src" ] &&
+    {
+      echo >&2 "*** SETUP: [$item_src]='$method': '$OWN_DIR/$item_src' -- non-existing source; exit"
+      exit 23
+    }
+  done < <(IFS=$'\n'; LC_ALL=C sort -r <<<"${!SETUP[*]}")
   return 0
 }
-__verify-undo-methods()
+__verify-undo-items()
 {
-  local method='' item_methods=''
+  local item_methods='' method=''
   for item_methods in "${SETUP[@]}"; do
     method="${item_methods##*!}"
     [ -z "$method" ] && continue  # skip empty records
@@ -694,16 +714,16 @@ case "$OPT_MODE" in
       ;;&
   (go)
       RUN="${2:-$RUN}"
-      [ -f "$CHTOOR_DIR/$CHTOOR_MARKER" ] || __verify-setup-methods
+      [ -f "$CHTOOR_DIR/$CHTOOR_MARKER" ] || __verify-setup-items
       ;;
   (setup)
-      __verify-setup-methods
+      __verify-setup-items
       ;;
   (undo)
       if [ ! -f "$OPT_CONFIG_FILE" ]; then
         echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- not found; minimal default setup assumed"
       fi
-      __verify-undo-methods
+      __verify-undo-items
       ;;
 esac
 __chtoor-"$OPT_MODE"
