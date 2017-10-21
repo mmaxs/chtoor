@@ -519,6 +519,9 @@ __own()
             return 74
           }
         fi
+        # __copy-file-permissions "$Origin" "$Source"
+        # __copy-file-ownerships "$Origin" "$Source"
+        # __copy-file-selinux-context "$Origin" "$Source"
         echo "mount --bind '$Source' '$Target'"
         sudo mount -v --bind "$Source" "$Target"
         [ $? -eq 0 ] || return 77
@@ -567,26 +570,34 @@ __chtoor-setup()
   else
     mkdir -v "$NEW_ROOT" || { echo >&2 "*** chtoor-setup: '$NEW_ROOT' -- cannot create directory; return"; return 32; }
   fi
-  ## create a directory for own files
+
+  local item='' item_methods='' setup_method=''
+
+  ## create a directory for chroot environment's own files
   if [ -e "$OWN_DIR" ]; then
-    [ -d "$OWN_DIR" ] || { echo >&2 "*** chtoor-setup: '$OWN_DIR' -- not a directory; return"; return 32; }
-    __is-same-file "$OWN_DIR" "/" && { echo >&2 "*** chtoor-setup: '$OWN_DIR' -- is the current root; return"; return 32; }
+    [ -d "$OWN_DIR" ] || { echo >&2 "*** chtoor-setup: '$OWN_DIR' -- not a directory; return"; return 33; }
+    __is-same-file "$OWN_DIR" "/" && { echo >&2 "*** chtoor-setup: '$OWN_DIR' -- is the current root; return"; return 33; }
   else
-    mkdir -v "$OWN_DIR" || { echo >&2 "*** chtoor-setup: '$OWN_DIR' -- cannot create directory; return"; return 32; }
+    for item_methods in "${SETUP[@]}"; do
+      setup_method="${item_methods%%!*}"
+      if [[ "$setup_method" =~ ^own(-.+|)$ ]]; then
+        mkdir -v "$OWN_DIR" || { echo >&2 "*** chtoor-setup: '$OWN_DIR' -- cannot create directory; return"; return 33; }
+      fi
+      break
+    done
   fi
 
   ## do setup the new root hierarchy
-  local method='' item_methods='' item=''
   while IFS='' read -r item; do
     [ -z "$item" ] && continue
     item_methods="${SETUP[$item]}"
-    method="${item_methods%%!*}"
-    [ -z "$method" ] && continue
-    echo "--- chtoor-setup: [$item]='$method'"
-    "$method" "$item"  ||
+    setup_method="${item_methods%%!*}"
+    [ -z "$setup_method" ] && continue
+    echo "--- chtoor-setup: [$item]='$setup_method'"
+    "$setup_method" "$item"  ||
     {
       local -i err_code=$?
-      echo >&2 "*** chtoor-setup: '$method' -- method error ($err_code); abort"
+      echo >&2 "*** chtoor-setup: '$setup_method' -- method error ($err_code); abort"
       echo >&2 "*** chtoor-setup: there can be several mounts having been done so far"
       __print-NEW_ROOT-mounts "chtoor-setup:"
       return "$err_code";
@@ -619,26 +630,26 @@ __chtoor-undo()
   [ "$(realpath -q -e "$NEW_ROOT")" = "/" ] && { echo >&2 "*** chtoor-undo: '$NEW_ROOT' -- is the current root mountpoint; return"; return 51; }
 
   ## undo setup for new root hierarchy
-  local method='' item_methods='' item=''
+  local item='' item_methods='' undo_method=''
   while IFS='' read -r item; do
     [ -z "$item" ] && continue
     item_methods="${SETUP[$item]}"
-    method="${item_methods##*!}"
-    [ -z "$method" ] && continue
-    if [ "$method" = "$item_methods" ]; then
-      method="undo-$method"  # default corresponding undo method
-      declare -F "$method" >/dev/null || continue  # skip non-existing default corresponding undo method
+    undo_method="${item_methods##*!}"
+    [ -z "$undo_method" ] && continue
+    if [ "$undo_method" = "$item_methods" ]; then
+      undo_method="undo-$method"  # default corresponding undo method
+      declare -F "$undo_method" >/dev/null || continue  # skip non-existing default corresponding undo method
     fi
-    echo "--- chtoor-undo: [$item]='$method'"
-    "$method" "$item"  ||
+    echo "--- chtoor-undo: [$item]='$undo_method'"
+    "$undo_method" "$item"  ||
     {
       local -i err_code=$?
-      echo >&2 "*** chtoor-undo: '$method' -- method error ($err_code); abort"
+      echo >&2 "*** chtoor-undo: '$undo_method' -- method error ($err_code); abort"
       echo >&2 "*** chtoor-undo: some mounts can still remain undone"
       __print-NEW_ROOT-mounts "chtoor-undo:"
       return "$err_code";
     }
-  done < <(IFS=$'\n'; LC_ALL=C sort -r <<<"${!SETUP[*]}")
+  done < <(IFS=$'\n'; LC_ALL=C sort -r <<<"${!SETUP[*]}")  # reverse order
 
   echo
   if mountpoint -q "$NEW_ROOT"; then
@@ -660,43 +671,45 @@ __chtoor-undo()
 
 __verify-setup-items()
 {
-  local item_src='' item_methods='' method=''
+  local -i ret=0
+  local item_src='' item_methods='' setup_method=''
   while IFS='' read -r item_src; do
     [ -z "$item_src" ] && continue  # skip items with empty source
     item_methods="${SETUP[$item_src]}"
-    method="${item_methods%%!*}"
-    [ -z "$method" ] && continue  # skip items with empty method
+    setup_method="${item_methods%%!*}"
+    [ -z "$setup_method" ] && continue  # skip items with empty method
 
     [ -e "$item_src" ]  ||
     {
-      echo >&2 "*** SETUP: [$item_src]='$method' -- non-existing origin; exit"
-      exit 21
+      echo >&2 "*** SETUP: [$item_src]='$setup_method' -- non-existing origin"
+      ret+=1
     }
-    declare -F "$method" >/dev/null  ||
+    declare -F "$setup_method" >/dev/null  ||
     {
-      echo >&2 "*** SETUP: [$item_src]='$method' -- unknown method; exit"
-      exit 22
+      echo >&2 "*** SETUP: [$item_src]='$setup_method' -- unknown setup method"
+      ret+=1
     }
-    [ "$method" = "own" -a ! -e "$OWN_DIR/$item_src" ] &&
+    [ "$setup_method" = "own" -a ! -e "$OWN_DIR/$item_src" ]  &&
     {
-      echo >&2 "*** SETUP: [$item_src]='$method': '$OWN_DIR/$item_src' -- non-existing source; exit"
-      exit 23
+      echo >&2 "*** SETUP: [$item_src]='$setup_method' -- non-existing source for '$setup_method' method: '$OWN_DIR/$item_src'"
+      ret+=1
     }
-  done < <(IFS=$'\n'; LC_ALL=C sort -r <<<"${!SETUP[*]}")
-  return 0
+  done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!SETUP[*]}")
+  return "$ret"
 }
 __verify-undo-items()
 {
-  local item_methods='' method=''
+  local -i ret=0
+  local item_methods='' undo_method=''
   for item_methods in "${SETUP[@]}"; do
-    method="${item_methods##*!}"
-    [ -z "$method" ] && continue  # skip empty records
-    [ "$method" = "$item_methods" ] && continue  # no undo method is specified; no matter if the default corresponding undo method exists
-    declare -F "$method" >/dev/null && continue
-    echo >&2 "*** SETUP: '$method' -- unknown undo method; exit"
-    exit 21
+    undo_method="${item_methods##*!}"
+    [ -z "$undo_method" ] && continue  # skip empty records
+    [ "$undo_method" = "$item_methods" ] && continue  # no undo method is specified; no matter if the default corresponding undo method exists
+    declare -F "$undo_method" >/dev/null && continue
+    echo >&2 "*** SETUP: '$undo_method' -- unknown undo method"
+    ret+=1
   done
-  return 0
+  return "$ret"
 }
 
 case "$OPT_MODE" in
@@ -704,7 +717,7 @@ case "$OPT_MODE" in
       ## read the config file
       [ -z "$OPT_CONFIG_FILE" ] && OPT_CONFIG_FILE="$CHTOOR_DIR/chtoor.conf"
       if [ -f "$OPT_CONFIG_FILE" ]; then
-        source "$OPT_CONFIG_FILE" || { echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- source failure; exit"; exit 4; }
+        source "$OPT_CONFIG_FILE" || { echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- source failure; exit"; exit 3; }
       fi
       ;;&
   (go | setup)
@@ -714,16 +727,18 @@ case "$OPT_MODE" in
       ;;&
   (go)
       RUN="${2:-$RUN}"
-      [ -f "$CHTOOR_DIR/$CHTOOR_MARKER" ] || __verify-setup-items
+      if [ ! -f "$CHTOOR_DIR/$CHTOOR_MARKER" ]; then
+        __verify-setup-items || { echo >&2 "*** SETUP: verification failed; exit"; exit 4; }
+      fi
       ;;
   (setup)
-      __verify-setup-items
+      __verify-setup-items || { echo >&2 "*** SETUP: verification failed; exit"; exit 4; }
       ;;
   (undo)
       if [ ! -f "$OPT_CONFIG_FILE" ]; then
         echo >&2 "*** config file: '$OPT_CONFIG_FILE' -- not found; minimal default setup assumed"
       fi
-      __verify-undo-items
+      __verify-undo-items || { echo >&2 "*** SETUP: verification failed; exit"; exit 4; }
       ;;
 esac
 __chtoor-"$OPT_MODE"
