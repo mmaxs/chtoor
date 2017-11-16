@@ -122,7 +122,7 @@ __replicate-pathname()
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
   [ -e "$Source" ] || { echo >&2 "*** replicate-pathname: Source='$Source' -- empty / non-existing argument; return"; return 60; }
-  [ -e "$NewRoot" ] || { echo >&2 "*** replicate-pathname: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 60; }
+  [ -d "$NewRoot" ] || { echo >&2 "*** replicate-pathname: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 60; }
 
   ## replicate path to Source
   local src="" src_type="" tgt="$NewRoot" C=""
@@ -260,7 +260,7 @@ __dupmount()
   local Target="$NewRoot/$Source"
   local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
   [ -e "$Source" ] || { echo >&2 "*** dupmount: Source='$Source' -- empty / non-existing argument; return"; return 70; }
-  [ -e "$NewRoot" ] || { echo >&2 "*** dupmount: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 70; }
+  [ -d "$NewRoot" ] || { echo >&2 "*** dupmount: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
 
   mountpoint -q "$Source"  ||
   {
@@ -368,7 +368,7 @@ __undo-dupmount()
   local Target="$NewRoot/$Source"
   local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
   [ -e "$Source" ] || { echo >&2 "*** undo-dupmount: Source='$Source' -- empty / non-existing argument; return"; return 70; }
-  [ -e "$NewRoot" ] || { echo >&2 "*** undo-dupmount: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 70; }
+  [ -d "$NewRoot" ] || { echo >&2 "*** undo-dupmount: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
 
   mountpoint -q "$Target"  ||
   {
@@ -391,7 +391,7 @@ __bind()
   local Target="$NewRoot/$Source"
   local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
   [ -e "$Source" ] || { echo >&2 "*** bind: Source='$Source' -- empty / non-existing argument; return"; return 70; }
-  [ -e "$NewRoot" ] || { echo >&2 "*** bind: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 70; }
+  [ -d "$NewRoot" ] || { echo >&2 "*** bind: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
 
   # __is-same-file "$Source" "$Target" && { echo "--- bind: skip mounting the file to itself"; return 0; }
 
@@ -464,7 +464,7 @@ __undo-bind()
   local Target="$NewRoot/$Source"
   local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
   [ -e "$Source" ] || { echo >&2 "*** undo-bind: Source='$Source' -- empty / non-existing argument; return"; return 70; }
-  [ -e "$NewRoot" ] || { echo >&2 "*** undo-bind: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 70; }
+  [ -d "$NewRoot" ] || { echo >&2 "*** undo-bind: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
 
   mountpoint -q "$Target"  ||
   {
@@ -485,9 +485,9 @@ __own()
 {
   local OwnDir="$1" Origin="$2" NewRoot="$3"
   local Source="$OwnDir/$Origin" Target="$NewRoot/$Origin"
-  [ -e "$OwnDir" ] || { echo >&2 "*** own: OwnDir='$OwnDir' -- empty / non-existing argument; return"; return 70; }
+  [ -d "$OwnDir" ] || { echo >&2 "*** own: OwnDir='$OwnDir' -- empty argument / not a directory; return"; return 70; }
   [ -e "$Origin" ] || { echo >&2 "*** own: Origin='$Origin' -- empty / non-existing argument; return"; return 70; }
-  [ -e "$NewRoot" ] || { echo >&2 "*** own: NewRoot='$NewRoot' -- empty / non-existing argument; return"; return 70; }
+  [ -d "$NewRoot" ] || { echo >&2 "*** own: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
 
   [ -e "$Source" ] || { echo >&2 "*** own: '$Source' -- non-existing source; return"; return 71; }
   __is-same-file "$Source" "$Target" && { echo "--- own: skip mounting the file to itself"; return 0; }
@@ -537,6 +537,25 @@ __own()
 }
 own() { __own "$OWN_DIR" "$1" "$NEW_ROOT"; }
 
+__undo-own()
+{
+  local OwnDir="$1" Origin="$2" NewRoot="$3"
+  local Source="$OwnDir/$Origin" Target="$NewRoot/$Origin"
+  [ -d "$OwnDir" ] || { echo >&2 "*** own: OwnDir='$OwnDir' -- empty argument / not a directory; return"; return 70; }
+  [ -e "$Origin" ] || { echo >&2 "*** own: Origin='$Origin' -- empty / non-existing argument; return"; return 70; }
+  [ -d "$NewRoot" ] || { echo >&2 "*** own: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
+
+  mountpoint -q "$Target"  ||
+  {
+    echo >&2 "*** undo-own: '$Target' -- not a mountpoint; skipped"
+    return 0
+  }
+
+  echo "umount -R '$Target'"
+  sudo umount -v -R "$Target"
+}
+undo-own() { __undo-own "$OWN_DIR" "$1" "$NEW_ROOT"; }
+
 
 ## SUBROUTINES -- CHTOOR COMMANDS
 
@@ -545,8 +564,19 @@ __print-NEW_ROOT-mounts()  # print a summary of the existing bind-mounts for NEW
   echo "---${*:+ $*} '$NEW_ROOT' mounts:"
   findmnt --list --output TARGET,SOURCE,PROPAGATION,OPTIONS  |
   gawk -v NewRoot="$(realpath -q -e "$NEW_ROOT")" -e '
-      NR==1 { $0 = gensub(/(\s)OPTIONS$/, "\\1 R/W", 1); print; next }
-      index($0, NewRoot)==1 { $0 = gensub(/(\s)(|\S+,)(ro|rw)(,\S+|)$/, "\\1 \\3", 1); print | "LC_ALL=C sort" }
+      BEGIN { NewRootStrLen=length(NewRoot) }
+      NR == 1 {
+        if (index($0, "SOURCE") > 7+NewRootStrLen) $0 = "TARGET" substr($0, 7+NewRootStrLen)
+        $0 = gensub(/(\s)OPTIONS$/, "\\1 R/W", 1)
+        print
+        next
+      }
+      index($0, NewRoot) == 1 {
+        $0 = substr($0, NewRootStrLen+2)
+        $0 = "/" $0
+        $0 = gensub(/(\s)(|\S+,)(ro|rw)(,\S+|)$/, "\\1 \\3", 1)
+        print | "LC_ALL=C sort"
+      }
   '
   echo "---"
 }
@@ -637,7 +667,7 @@ __chtoor-undo()
     undo_method="${item_methods##*!}"
     [ -z "$undo_method" ] && continue
     if [ "$undo_method" = "$item_methods" ]; then
-      undo_method="undo-$method"  # default corresponding undo method
+      undo_method="undo-$undo_method"  # default corresponding undo method
       declare -F "$undo_method" >/dev/null || continue  # skip non-existing default corresponding undo method
     fi
     echo "--- chtoor-undo: [$item]='$undo_method'"
