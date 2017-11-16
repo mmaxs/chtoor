@@ -556,6 +556,37 @@ __undo-own()
 }
 undo-own() { __undo-own "$OWN_DIR" "$1" "$NEW_ROOT"; }
 
+__own-create()
+{
+  local OwnDir="$1" Origin="$2" NewRoot="$3"
+  local Source="$OwnDir/$Origin" Target="$NewRoot/$Origin"
+  [ -d "$OwnDir" ] || { echo >&2 "*** own: OwnDir='$OwnDir' -- empty argument / not a directory; return"; return 70; }
+  [ -e "$Origin" ] || { echo >&2 "*** own: Origin='$Origin' -- empty / non-existing argument; return"; return 70; }
+  [ -d "$NewRoot" ] || { echo >&2 "*** own: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
+
+  if [ ! -e "$Source" ]; then
+    local osrc_type="$(__file-type "$Origin")"
+    local deref_osrc_type="${osrc_type##symbolic link / }"
+    case "$deref_osrc_type" in
+      (directory | regular\ file)
+          __replicate-pathname "$Origin" "$OwnDir"  ||
+          {
+            echo >&2 "*** own-create: '$Source' -- cannot create source from origin '$Origin'; abort"
+            return 74
+          }
+          ;;
+      (*)
+          echo >&2 "*** own-create: '$Origin' -- unexpected source origin type: $deref_osrc_type; return"
+          return 70
+          ;;
+    esac
+  fi
+  __own "$OwnDir" "$Origin" "$NewRoot"
+  return $?
+}
+own-create() { __own-create "$OWN_DIR" "$1" "$NEW_ROOT"; }
+undo-own-create() { __undo-own "$OWN_DIR" "$1" "$NEW_ROOT"; }
+
 
 ## SUBROUTINES -- CHTOOR COMMANDS
 
