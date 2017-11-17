@@ -65,6 +65,11 @@ __is-same-file()
     }
   }
 }
+__is-same-or-descendant-file()
+{
+  local ancestor="$(realpath -q -e "$1")" descendant="$(realpath -q -e "$2")"
+  __is-same-file "$ancestor" "$descendat" || [[ "$ancestor" == "$descendat"/* ]]
+}
 
 __file-type()
 {
@@ -330,7 +335,7 @@ __dupmount()
               done
             fi
             for sub_mp in "${submounts[@]}"; do
-              if __is-same-file "$Source/$sub_mp" "$NewRoot"; then
+              if __is-same-or-descendant-file "$NewRoot" "$Source/$sub_mp"; then
                 echo "--- dupmount: [$Source/$sub_mp] -- skip self-recursion mount"
                 continue
               fi
@@ -393,7 +398,7 @@ __bind()
   [ -e "$Source" ] || { echo >&2 "*** bind: Source='$Source' -- empty / non-existing argument; return"; return 70; }
   [ -d "$NewRoot" ] || { echo >&2 "*** bind: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
 
-  # __is-same-file "$Source" "$Target" && { echo "--- bind: skip mounting the file to itself"; return 0; }
+  __is-same-file "$Source" "$Target" && { echo "--- bind: skip mounting the file to itself"; return 0; }
 
   local src_type="$(__file-type "$Source")"
   local deref_src_type="${src_type##symbolic link / }"
@@ -436,7 +441,7 @@ __bind()
             for sub_mp in "${submounts[@]}"; do echo "[/$sub_mp]"; done
             echo "---"
             for sub_mp in "${submounts[@]}"; do
-              if __is-same-file "$Source/$sub_mp" "$NewRoot"; then
+              if __is-same-or-descendant-file "$NewRoot" "$Source/$sub_mp"; then
                 echo "--- bind: [$Source/$sub_mp] -- skip self-recursion mount"
                 continue
               fi
@@ -596,13 +601,13 @@ __print-NEW_ROOT-mounts()  # print a summary of the existing bind-mounts for NEW
   findmnt --list --output TARGET,SOURCE,PROPAGATION,OPTIONS  |
   gawk -v NewRoot="$(realpath -q -e "$NEW_ROOT")" -e '
       BEGIN { NewRootStrLen=length(NewRoot) }
-      NR == 1 {
+      NR == 1  {
         if (index($0, "SOURCE") > 7+NewRootStrLen) $0 = "TARGET" substr($0, 7+NewRootStrLen)
         $0 = gensub(/(\s)OPTIONS$/, "\\1 R/W", 1)
         print
         next
       }
-      index($0, NewRoot) == 1 {
+      index($0, NewRoot " ") == 1 || index($0, NewRoot "/") == 1  {
         $0 = substr($0, NewRootStrLen+2)
         $0 = "/" $0
         $0 = gensub(/(\s)(|\S+,)(ro|rw)(,\S+|)$/, "\\1 \\3", 1)
