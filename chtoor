@@ -77,8 +77,8 @@ __file-type()
   while true; do
     test -d "$1" && { t="directory"; break; }
     test -f "$1" && { t="regular file"; break; }
-    test -b "$1" && { t="block special"; break; }
-    test -c "$1" && { t="character special"; break; }
+    test -b "$1" && { t="block special file"; break; }
+    test -c "$1" && { t="character special file"; break; }
     test -p "$1" && { t="named pipe"; break; }
     test -S "$1" && { t="socket"; break; }
     break;
@@ -127,7 +127,7 @@ __replicate-pathname()
   local Source="$1" NewRoot="$2"
   local -i OptCopyTargetAttrs=$((${3:-0}&1)) OptCopyPathAttrs=$((${3:-0}&2))
   local Target="$NewRoot/$Source"
-  [ -e "$Source" ] || { echo >&2 "*** replicate-pathname: Source='$Source' -- empty / non-existing argument; return"; return 60; }
+  [ -e "$Source" -o -L "$Source" ] || { echo >&2 "*** replicate-pathname: Source='$Source' -- empty / non-existing argument; return"; return 60; }
   [ -d "$NewRoot" ] || { echo >&2 "*** replicate-pathname: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 60; }
 
   ## replicate path to Source
@@ -271,7 +271,7 @@ __dupmount()
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
   local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
-  [ -e "$Source" ] || { echo >&2 "*** dupmount: Source='$Source' -- empty / non-existing argument; return"; return 70; }
+  [ -e "$Source" -o -L "$Source" ] || { echo >&2 "*** dupmount: Source='$Source' -- empty / non-existing argument; return"; return 70; }
   [ -d "$NewRoot" ] || { echo >&2 "*** dupmount: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
 
   mountpoint -q "$Source"  ||
@@ -379,7 +379,7 @@ __undo-dupmount()
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
   local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
-  [ -e "$Source" ] || { echo >&2 "*** undo-dupmount: Source='$Source' -- empty / non-existing argument; return"; return 70; }
+  [ -e "$Source" -o -L "$Source" ] || { echo >&2 "*** undo-dupmount: Source='$Source' -- empty / non-existing argument; return"; return 70; }
   [ -d "$NewRoot" ] || { echo >&2 "*** undo-dupmount: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
 
   mountpoint -q "$Target"  ||
@@ -402,65 +402,91 @@ __bind()
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
   local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
-  [ -e "$Source" ] || { echo >&2 "*** bind: Source='$Source' -- empty / non-existing argument; return"; return 70; }
+  [ -e "$Source" -o -L "$Source" ] || { echo >&2 "*** bind: Source='$Source' -- empty / non-existing argument; return"; return 70; }
   [ -d "$NewRoot" ] || { echo >&2 "*** bind: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
 
   __is-same-file "$Source" "$Target" && { echo "--- bind: skip mounting the file to itself"; return 0; }
 
-  local src_type="$(__file-type "$Source")"
-  local deref_src_type="${src_type##symbolic link / }"
-  case "$deref_src_type" in
-    (directory | regular\ file)
-        if [ -e "$Target" ]; then
-          local tgt_type="$(__file-type "$Target")"
-          local deref_tgt_type="${tgt_type##symbolic link / }"
-          [ "$deref_tgt_type" = "$deref_src_type" ]  ||
-          {
-            echo >&2 "*** bind: '$Target' -- cannot mount to existing target of mismatched type: not a $deref_src_type; return"
+  local SITUATION=""
+  local src_type="$(__file-type "$Source")" tgt_type="$(__file-type "$Target")"
+  if [[ "$src_type" == "symbolic link / "* ]]; then
+    SITUATION="symlink source"
+    src_type="${src_type##symbolic link / }"
+  else
+    SITUATION="direct source"
+  fi
+  if [ -n "$tgt_type" ]; then
+    if [[ "$tgt_type" == "symbolic link / "* ]]; then
+      SITUATION+=" / symlink target"
+      tgt_type="${tgt_type##symbolic link / }"
+    else
+      SITUATION+=" / direct target"
+    fi
+  else
+    SITUATION+=" / no target"
+  fi
+
+  case "$SITUATION" in
+    ("symlink source / symlink target")
+        echo "--- bind: source and existing target '$Target' both are symlinks; don't mount from symlink over symlink"
+        return 0
+        ;;
+    (*" / direct target")
+        [ "$tgt_type" = "$src_type" ] || {
+            echo >&2 "*** bind: '$Target' -- cannot mount to existing target of mismatched type: not a $src_type; return"
             return 72
-          }
-          mountpoint -q "$Target" && echo >&2 "*** bind: '$Target' -- target is a mountpoint; will be over-mounted"
-        else
-          __replicate-pathname "$Source" "$NewRoot" 3  ||
-          {
-            echo >&2 "*** bind: '$Target' -- cannot create mountpoint; abort"
-            return 73
-          }
-        fi
-        echo "mount --bind '$Source' '$Target'"
-        sudo mount -v --bind "$Source" "$Target"
-        [ $? -eq 0 ] || return 77
-        echo "mount --make-slave '$Target'"
-        sudo mount -v --make-slave "$Target"
-        if [ "$OptRO" -ne 0 ]; then
-          echo "mount -o remount,ro,bind '$Source' '$Target'"
-          sudo mount -v -o remount,ro,bind "$Source" "$Target"
-          [ $? -eq 0 ] || return 78
-        fi
+        }
+        mountpoint -q "$Target" && echo >&2 "*** bind: '$Target' -- existing target is a mountpoint; will be over-mounted"
         ;;&
-    (directory)
-        if [ "$OptRecursive" -ne 0 ]; then
-          local -a submounts
-          eval submounts=("$(__submounts "$Source")")
-          if [ ${#submounts} -ne 0 ]; then
-            local sub_mp=''
-            echo "--- bind: [$Source] submounts:"
-            for sub_mp in "${submounts[@]}"; do echo "[/$sub_mp]"; done
-            echo "---"
-            for sub_mp in "${submounts[@]}"; do
-              if __is-same-or-descendant-file "$NewRoot" "$Source/$sub_mp"; then
-                echo "--- bind: [$Source/$sub_mp] -- skip self-recursion mount"
-                continue
-              fi
-              echo "--- bind: [$Source/$sub_mp]"
-              __bind "$Source/$sub_mp" "$NewRoot" "$((2|$OptRO))"
-            done
-          fi
-        fi
+    (*" / no target")
+        __replicate-pathname "$Source" "$NewRoot" 3 || {
+            echo >&2 "*** bind: '$Target' -- cannot replicate source; abort"
+            return 73
+        }
+        ;;&
+    ("symlink source / no target")
+        echo "--- bind: '$Target' -- leave the replicated symlink as is; don't mount from symlink over symlink"
+        return 0
         ;;
     (*)
-        echo >&2 "*** bind: '$Source' -- unexpected source type: $deref_src_type; return"
-        return 79
+        case "$src_type" in
+          (directory | regular\ file)
+              echo "mount --bind '$Source' '$Target'"
+              sudo mount -v --bind "$Source" "$Target"
+              [ $? -eq 0 ] || return 77
+              echo "mount --make-slave '$Target'"
+              sudo mount -v --make-slave "$Target"
+              if [ "$OptRO" -ne 0 ]; then
+                echo "mount -o remount,ro,bind '$Source' '$Target'"
+                sudo mount -v -o remount,ro,bind "$Source" "$Target"
+                [ $? -eq 0 ] || return 78
+              fi
+              ;;&
+          (directory)
+              if [ "$OptRecursive" -ne 0 ]; then
+                local -a submounts
+                eval submounts=("$(__submounts "$Source")")
+                if [ ${#submounts} -ne 0 ]; then
+                  local sub_mp=''
+                  echo "--- bind: [$Source] submounts:"
+                  for sub_mp in "${submounts[@]}"; do echo "[/$sub_mp]"; done
+                  echo "---"
+                  for sub_mp in "${submounts[@]}"; do
+                    if __is-same-or-descendant-file "$NewRoot" "$Source/$sub_mp"; then
+                      echo "--- bind: [$Source/$sub_mp] -- skip self-recursion mount"
+                      continue
+                    fi
+                    echo "--- bind: [$Source/$sub_mp]"
+                    __bind "$Source/$sub_mp" "$NewRoot" "$((2|$OptRO))"
+                  done
+                fi
+              fi
+              ;;
+          (*)
+              echo >&2 "*** bind: '$Source' -- unexpected source type: $src_type; return"
+              return 79
+              ;;
+        esac
         ;;
   esac
   return 0
@@ -475,7 +501,7 @@ __undo-bind()
   local Source="$1" NewRoot="$2"
   local Target="$NewRoot/$Source"
   local -i OptRO=$((${3:-0}&1)) OptRecursive=$((${3:-0}&2))
-  [ -e "$Source" ] || { echo >&2 "*** undo-bind: Source='$Source' -- empty / non-existing argument; return"; return 70; }
+  [ -e "$Source" -o -L "$Source" ] || { echo >&2 "*** undo-bind: Source='$Source' -- empty / non-existing argument; return"; return 70; }
   [ -d "$NewRoot" ] || { echo >&2 "*** undo-bind: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
 
   mountpoint -q "$Target"  ||
@@ -498,7 +524,7 @@ __own()
   local OwnDir="$1" Origin="$2" NewRoot="$3"
   local Source="$OwnDir/$Origin" Target="$NewRoot/$Origin"
   [ -d "$OwnDir" ] || { echo >&2 "*** own: OwnDir='$OwnDir' -- empty argument / not a directory; return"; return 70; }
-  [ -e "$Origin" ] || { echo >&2 "*** own: Origin='$Origin' -- empty / non-existing argument; return"; return 70; }
+  [ -e "$Origin" -o -L "$Origin" ] || { echo >&2 "*** own: Origin='$Origin' -- empty / non-existing argument; return"; return 70; }
   [ -d "$NewRoot" ] || { echo >&2 "*** own: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
 
   [ -e "$Source" ] || { echo >&2 "*** own: '$Source' -- non-existing source; return"; return 71; }
@@ -570,7 +596,7 @@ __own-create()
   local OwnDir="$1" Origin="$2" NewRoot="$3"
   local Source="$OwnDir/$Origin" Target="$NewRoot/$Origin"
   [ -d "$OwnDir" ] || { echo >&2 "*** own: OwnDir='$OwnDir' -- empty argument / not a directory; return"; return 70; }
-  [ -e "$Origin" ] || { echo >&2 "*** own: Origin='$Origin' -- empty / non-existing argument; return"; return 70; }
+  [ -e "$Origin" -o -L "$Origin" ] || { echo >&2 "*** own: Origin='$Origin' -- empty / non-existing argument; return"; return 70; }
   [ -d "$NewRoot" ] || { echo >&2 "*** own: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
 
   if [ ! -e "$Source" ]; then
@@ -601,7 +627,9 @@ undo-own-create() { __undo-own "$OWN_DIR" "$1" "$NEW_ROOT"; }
 
 __print-NEW_ROOT-mounts()  # print a summary of the existing bind-mounts for NEW_ROOT hierarchy
 {
-  echo "---${*:+ $*} '$NEW_ROOT' mounts:"
+  local header="${1:----}"
+  local footer="${2:-${header:0:3}}"
+  echo "$header '$NEW_ROOT' mounts:"
   findmnt --list --output TARGET,SOURCE,PROPAGATION,OPTIONS  |
   gawk -v NewRoot="$(realpath -q -e "$NEW_ROOT")" -e '
       BEGIN { NewRootStrLen=length(NewRoot) }
@@ -618,7 +646,7 @@ __print-NEW_ROOT-mounts()  # print a summary of the existing bind-mounts for NEW
         print | "LC_ALL=C sort"
       }
   '
-  echo "---"
+  echo "$footer"
 }
 
 
@@ -669,12 +697,12 @@ __chtoor-setup()
       local -i err_code=$?
       echo >&2 "*** chtoor-setup: '$setup_method' -- method error ($err_code); abort"
       echo >&2 "*** chtoor-setup: there can be several mounts having been done so far"
-      __print-NEW_ROOT-mounts "chtoor-setup:"
+      __print-NEW_ROOT-mounts "*** chtoor-setup:" >&2
       return "$err_code";
     }
   done < <(IFS=$'\n'; LC_ALL=C sort <<<"${!SETUP[*]}")
   echo
-  __print-NEW_ROOT-mounts "chtoor-setup:"
+  __print-NEW_ROOT-mounts "--- chtoor-setup:"
 
   ## create a marker file to visually distiguish the new root hierarchy
   if ! __is-same-file "$NEW_ROOT" "/" && [ -w "$NEW_ROOT" ]; then
@@ -716,7 +744,7 @@ __chtoor-undo()
       local -i err_code=$?
       echo >&2 "*** chtoor-undo: '$undo_method' -- method error ($err_code); abort"
       echo >&2 "*** chtoor-undo: some mounts can still remain undone"
-      __print-NEW_ROOT-mounts "chtoor-undo:"
+      __print-NEW_ROOT-mounts "*** chtoor-undo:" >&2
       return "$err_code";
     }
   done < <(IFS=$'\n'; LC_ALL=C sort -r <<<"${!SETUP[*]}")  # reverse order
@@ -727,7 +755,7 @@ __chtoor-undo()
     echo "umount -R '$NEW_ROOT'"
     sudo umount -v -R "$NEW_ROOT"
   fi
-  __print-NEW_ROOT-mounts "chtoor-undo:"
+  __print-NEW_ROOT-mounts "--- chtoor-undo:"
 
   ## remove marker files
   [ -w "$NEW_ROOT" -a -f "$NEW_ROOT/$CHTOOR_MARKER" ] && rm -v "$NEW_ROOT/$CHTOOR_MARKER"
