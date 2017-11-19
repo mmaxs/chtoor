@@ -1,5 +1,8 @@
 #! /bin/bash
 
+exec 2>&1  # use single sink for all streams
+
+
 ## DECLARATIONS
 
 declare OPT_MODE="go"
@@ -40,7 +43,7 @@ declare CHTOOR_MARKER=".chtoor"  # the file name to visually denote the new root
 
 declare USER="$(id -nu)"
 declare RUN="bash -l"  # the command to run with the changed root directory
-declare EXPORT=(DISPLAY)  # shell variables for export into new root environment
+declare PRESERVE_ENV="DISPLAY"  # a comma-separeted list of shell variables to be preserved for the new root environment (in addition to those defaulted in sudoers settings)
 declare -A SETUP=(  # some minimal defaults to setup the NEW_ROOT directory hierarchy
     [/]=rbind-ro
     [/home/"$USER"]=own-create
@@ -107,10 +110,10 @@ __submounts()
 __copy-file-attributes()
 {
   local Source="$1" Target="$2" StatFormat="$3" ChAttrCmd="$4"
-  [ -e "$Source" ] || { echo >&2 "*** replicate-file-attributes: Source='$Source' -- empty / non-existing argument; return"; return 1; }
-  [ -e "$Target" ] || { echo >&2 "*** replicate-file-attributes: Target='$Target' -- empty / non-existing argument; return"; return 1; }
-  [ -n "$StatFormat" ] || { echo >&2 "*** replicate-file-attributes: empty StatFormat argument; return"; return 1; }
-  [ -n "$ChAttrCmd" ] || { echo >&2 "*** replicate-file-attributes: empty ChAttrCmd argument; return"; return 1; }
+  [ -e "$Source" ] || { echo >&2 "*** copy-file-attributes: Source='$Source' -- empty / non-existing argument; return"; return 1; }
+  [ -e "$Target" ] || { echo >&2 "*** copy-file-attributes: Target='$Target' -- empty / non-existing argument; return"; return 1; }
+  [ -n "$StatFormat" ] || { echo >&2 "*** copy-file-attributes: empty StatFormat argument; return"; return 1; }
+  [ -n "$ChAttrCmd" ] || { echo >&2 "*** copy-file-attributes: empty ChAttrCmd argument; return"; return 1; }
 
   local src_attrs="$(sudo stat --format="$StatFormat" "$Source" 2>/dev/null)"
   local tgt_attrs="$(sudo stat --format="$StatFormat" "$Target" 2>/dev/null)"
@@ -163,7 +166,7 @@ __replicate-pathname()
             }
             [ -d "$tgt" ]  ||
             {
-              echo >&2 "*** replicate-pathname: '$tgt' -- path component appears to be a dangling symlink; create directory instead of symlink copying"
+              echo "+++ replicate-pathname: '$tgt' -- path component appears to be a dangling symlink; create directory instead of symlink copying"
               sudo rm "$tgt"
               sudo mkdir -v "$tgt"  ||
               {
@@ -306,7 +309,7 @@ __dupmount()
         if [ "$mp_src" != "${mp_info[SOURCE]}" ]; then
           ## bind mount
           mp_src="${mp_info[SOURCE]:${#mp_src}+1:-1}"  # extract bind mount source
-          __is-same-file "$mp_src" "$Target" && { echo "--- dupmount: skip bind mounting the file to itself"; return 0; }
+          __is-same-file "$mp_src" "$Target" && { echo "+++ dupmount: skip bind mounting the file to itself"; return 0; }
           echo "mount --bind '$mp_src' '$Target'"
           sudo mount -v --bind "$mp_src" "$Target"
           [ $? -eq 0 ] || return 77
@@ -343,7 +346,7 @@ __dupmount()
             fi
             for sub_mp in "${submounts[@]}"; do
               if __is-same-or-descendant-file "$NewRoot" "$Source/$sub_mp"; then
-                echo "--- dupmount: [$Source/$sub_mp] -- skip self-recursion mount"
+                echo "+++ dupmount: [$Source/$sub_mp] -- skip self-recursion mount"
                 continue
               fi
               echo "--- dupmount: [$Source/$sub_mp]"
@@ -405,47 +408,49 @@ __bind()
   [ -e "$Source" -o -L "$Source" ] || { echo >&2 "*** bind: Source='$Source' -- empty / non-existing argument; return"; return 70; }
   [ -d "$NewRoot" ] || { echo >&2 "*** bind: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
 
-  __is-same-file "$Source" "$Target" && { echo "--- bind: skip mounting the file to itself"; return 0; }
+  __is-same-file "$Source" "$Target" && { echo "+++ bind: skip mounting the file to itself"; return 0; }
 
-  local SITUATION=""
+  local S=""
   local src_type="$(__file-type "$Source")" tgt_type="$(__file-type "$Target")"
   if [[ "$src_type" == "symbolic link / "* ]]; then
-    SITUATION="symlink source"
+    S="symlink source"
     src_type="${src_type##symbolic link / }"
   else
-    SITUATION="direct source"
+    S="direct source"
   fi
   if [ -n "$tgt_type" ]; then
     if [[ "$tgt_type" == "symbolic link / "* ]]; then
-      SITUATION+=" / symlink target"
+      S+=" / symlink target"
       tgt_type="${tgt_type##symbolic link / }"
     else
-      SITUATION+=" / direct target"
+      S+=" / direct target"
     fi
   else
-    SITUATION+=" / no target"
+    S+=" / no target"
   fi
 
-  case "$SITUATION" in
+  case "$S" in
     ("symlink source / symlink target")
-        echo "--- bind: source and existing target '$Target' both are symlinks; don't mount from symlink over symlink"
+        echo "+++ bind: source and existing target '$Target' both are symlinks; don't mount from symlink over symlink"
         return 0
         ;;
-    (*" / direct target")
-        [ "$tgt_type" = "$src_type" ] || {
-            echo >&2 "*** bind: '$Target' -- cannot mount to existing target of mismatched type: not a $src_type; return"
-            return 72
+    ("direct source / symlink target" | *" / direct target")
+        [ "$tgt_type" = "$src_type" ]  ||
+        {
+          echo >&2 "*** bind: '$Target' -- cannot mount to existing target of mismatched type: not a $src_type; return"
+          return 72
         }
         mountpoint -q "$Target" && echo >&2 "*** bind: '$Target' -- existing target is a mountpoint; will be over-mounted"
         ;;&
     (*" / no target")
-        __replicate-pathname "$Source" "$NewRoot" 3 || {
-            echo >&2 "*** bind: '$Target' -- cannot replicate source; abort"
-            return 73
+        __replicate-pathname "$Source" "$NewRoot" 3  ||
+        {
+          echo >&2 "*** bind: '$Target' -- cannot replicate source; abort"
+          return 73
         }
         ;;&
     ("symlink source / no target")
-        echo "--- bind: '$Target' -- leave the replicated symlink as is; don't mount from symlink over symlink"
+        echo "+++ bind: '$Target' -- leave the replicated symlink as is; don't mount from symlink over symlink"
         return 0
         ;;
     (*)
@@ -473,7 +478,7 @@ __bind()
                   echo "---"
                   for sub_mp in "${submounts[@]}"; do
                     if __is-same-or-descendant-file "$NewRoot" "$Source/$sub_mp"; then
-                      echo "--- bind: [$Source/$sub_mp] -- skip self-recursion mount"
+                      echo "+++ bind: [$Source/$sub_mp] -- skip self-recursion mount"
                       continue
                     fi
                     echo "--- bind: [$Source/$sub_mp]"
@@ -506,7 +511,7 @@ __undo-bind()
 
   mountpoint -q "$Target"  ||
   {
-    echo >&2 "*** undo-bind: '$Target' -- not a mountpoint; skipped"
+    echo "+++ undo-bind: '$Target' -- not a mountpoint; skipped"
     return 0
   }
 
@@ -528,7 +533,7 @@ __own()
   [ -d "$NewRoot" ] || { echo >&2 "*** own: NewRoot='$NewRoot' -- empty argument / not a directory; return"; return 70; }
 
   [ -e "$Source" ] || { echo >&2 "*** own: '$Source' -- non-existing source; return"; return 71; }
-  __is-same-file "$Source" "$Target" && { echo "--- own: skip mounting the file to itself"; return 0; }
+  __is-same-file "$Source" "$Target" && { echo "+++ own: skip mounting the file to itself"; return 0; }
 
   local src_type="$(__file-type "$Source")"
   local deref_src_type="${src_type##symbolic link / }"
@@ -582,7 +587,7 @@ __undo-own()
 
   mountpoint -q "$Target"  ||
   {
-    echo >&2 "*** undo-own: '$Target' -- not a mountpoint; skipped"
+    echo "+++ undo-own: '$Target' -- not a mountpoint; skipped"
     return 0
   }
 
@@ -718,7 +723,8 @@ __chtoor-go()
   [ -f "$CHTOOR_DIR/$CHTOOR_MARKER" ]  ||
   __chtoor-setup  &&
   {
-    exec sudo --preserve-env chroot --userspec="$USER:$USER" -- "$NEW_ROOT" $RUN
+    echo "--- chtoor-go: $RUN"
+    exec sudo --preserve-env="$PRESERVE_ENV" chroot --userspec="$USER:$USER" -- "$NEW_ROOT" $RUN
   }
 }
 
@@ -842,7 +848,7 @@ esac
 __chtoor-"$OPT_MODE"
 
 exit
-
+###############
 
 is-root()  { [ "$(realpath -q -e "$1")" = "/" ]; }
 is-same()
