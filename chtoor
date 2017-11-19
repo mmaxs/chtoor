@@ -43,7 +43,13 @@ declare CHTOOR_MARKER=".chtoor"  # the file name to visually denote the new root
 
 declare USER="$(id -nu)"
 declare RUN="bash -l"  # the command to run with the changed root directory
-declare PRESERVE_ENV="DISPLAY"  # a comma-separeted list of shell variables to be preserved for the new root environment (in addition to those defaulted in sudoers settings)
+declare ENV=(  # shell variables to be preserved for the new root environment
+    HOSTNAME USERNAME HOME
+    TERM COLORTERM LS_COLORS
+    LANG LC_ALL
+    DISPLAY XAUTHORITY
+    PATH
+)
 declare -A SETUP=(  # some minimal defaults to setup the NEW_ROOT directory hierarchy
     [/]=rbind-ro
     [/home/"$USER"]=own-create
@@ -71,7 +77,7 @@ __is-same-file()
 __is-same-or-descendant-file()
 {
   local ancestor="$(realpath -q -e "$1")" descendant="$(realpath -q -e "$2")"
-  __is-same-file "$ancestor" "$descendat" || [[ "$ancestor" == "$descendat"/* ]]
+  __is-same-file "$ancestor" "$descendant" || [[ "$ancestor" == "$descendant"/* ]]
 }
 
 __file-type()
@@ -724,7 +730,15 @@ __chtoor-go()
   __chtoor-setup  &&
   {
     echo "--- chtoor-go: $RUN"
-    exec sudo --preserve-env="$PRESERVE_ENV" chroot --userspec="$USER:$USER" -- "$NEW_ROOT" $RUN
+    local env_var='' env_decl=''
+    for env_var in "${ENV[@]}"; do
+      env_var="$(declare -p "$env_var" 2>/dev/null)"
+      if [ -n "$env_var" ]; then
+        env_var="${env_var##declare }"
+        env_decl+="declare -x $env_var"$'\n'
+      fi
+    done
+    exec sudo env -i sh -c "$env_decl"'exec "$@"' "chtoor-go" "$(which chroot)" --userspec="$USER:$USER" -- "$NEW_ROOT" $RUN
   }
 }
 
