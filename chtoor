@@ -303,7 +303,7 @@ __dupmount()
           }
           mountpoint -q "$Target" && echo >&2 "*** dupmount: '$Target' -- target is a mountpoint; will be over-mounted"
         else
-          __replicate-pathname "$Source" "$NewRoot" 3  ||
+          __replicate-pathname "$Source" "$NewRoot" 2  ||
           {
             echo >&2 "*** dupmount: '$Target' -- cannot create mountpoint; abort"
             return 73
@@ -334,16 +334,16 @@ __dupmount()
           if [ ${#submounts} -ne 0 ]; then
             local sub_mp=''
             echo "--- dupmount: [$Source] submounts:"
-            for sub_mp in "${submounts[@]}"; do echo "[/$sub_mp]"; done
+            for sub_mp in "${submounts[@]}"; do echo "/${sub_mp##/}"; done
             echo "---"
             if [[ "$mp_opts" =~ (^|,)ro(,|$) ]]; then
               ## make sure that submount points exist on read-only mounted file system; if don't, replicate them
               for sub_mp in "${submounts[@]}"; do
-                [ -e "$Target/$sub_mp" ] ||
+                [ -e "$Target/$sub_mp" ]  ||
                 {
                   sudo mount -o remount,rw "$Target"
                   for sub_mp in "${submounts[@]}"; do
-                    [ -e "$Target/$sub_mp" ] || __replicate-pathname "$Source/$sub_mp" "$NewRoot" 3
+                    [ -e "$Target/$sub_mp" ] || __replicate-pathname "$Source/$sub_mp" "$NewRoot" 2
                   done
                   sudo mount -o remount,ro "$Target"
                   break
@@ -351,12 +351,12 @@ __dupmount()
               done
             fi
             for sub_mp in "${submounts[@]}"; do
+              echo "--- dupmount: [$Source/$sub_mp]"
               if __is-same-or-descendant-file "$NewRoot" "$Source/$sub_mp"; then
                 echo "+++ dupmount: [$Source/$sub_mp] -- skip self-recursion mount"
-                continue
+              else
+                __dupmount "$Source/$sub_mp" "$NewRoot" "$((2|$OptRO))"
               fi
-              echo "--- dupmount: [$Source/$sub_mp]"
-              __dupmount "$Source/$sub_mp" "$NewRoot" "$((2|$OptRO))"
             done
           fi
         fi
@@ -480,15 +480,15 @@ __bind()
                 if [ ${#submounts} -ne 0 ]; then
                   local sub_mp=''
                   echo "--- bind: [$Source] submounts:"
-                  for sub_mp in "${submounts[@]}"; do echo "[/$sub_mp]"; done
+                  for sub_mp in "${submounts[@]}"; do echo "/${sub_mp##/}"; done
                   echo "---"
                   for sub_mp in "${submounts[@]}"; do
+                    echo "--- bind: [$Source/$sub_mp]"
                     if __is-same-or-descendant-file "$NewRoot" "$Source/$sub_mp"; then
                       echo "+++ bind: [$Source/$sub_mp] -- skip self-recursion mount"
-                      continue
+                    else
+                      __bind "$Source/$sub_mp" "$NewRoot" "$((2|$OptRO))"
                     fi
-                    echo "--- bind: [$Source/$sub_mp]"
-                    __bind "$Source/$sub_mp" "$NewRoot" "$((2|$OptRO))"
                   done
                 fi
               fi
@@ -645,7 +645,7 @@ __print-NEW_ROOT-mounts()  # print a summary of the existing bind-mounts for NEW
   gawk -v NewRoot="$(realpath -q -e "$NEW_ROOT")" -e '
       BEGIN { NewRootStrLen=length(NewRoot) }
       NR == 1  {
-        if (index($0, "SOURCE") > 7+NewRootStrLen) $0 = "TARGET" substr($0, 7+NewRootStrLen)
+        if (index($0, "SOURCE") > 7+NewRootStrLen)  $0 = "TARGET" substr($0, 7+NewRootStrLen)
         $0 = gensub(/(\s)OPTIONS$/, "\\1 R/W", 1)
         print
         next
@@ -738,7 +738,7 @@ __chtoor-go()
         env_decl+="declare -x $env_var"$'\n'
       fi
     done
-    exec sudo env -i sh -c "$env_decl"'exec "$@"' "chtoor-go" "$(which chroot)" --userspec="$USER:$USER" -- "$NEW_ROOT" $RUN
+    exec sudo env -i sh -c "$env_decl"'exec "$@"' chtoor-go "$(which chroot)" --userspec="$USER" -- "$NEW_ROOT" $RUN
   }
 }
 
